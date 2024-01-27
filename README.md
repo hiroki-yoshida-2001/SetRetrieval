@@ -20,7 +20,8 @@ $ git clone https://github.com/hhachiya/set_rep_vector_and_asymmetric_attention.
 ```
 #### 2. Install the required packages from the ```requirements.txt``` file using conda:
 ```bash
-$ conda create --name xxx --file requirements.txt
+$ conda create --name set_match --file requirements.txt
+$ conda activate set_match
 ```
 #### 3. Download a zip file for each dataset, i.e., MNIST and shift15m, from [Google Drive](https://drive.google.com/drive/folders/1q6PLDC-nNkYsG9mdE_BoI_UBq6uMXtvS?usp=sharing) and place unzipped files to the corresponding ```pickle_data``` folder under each dataset folder as the following structure.  
 

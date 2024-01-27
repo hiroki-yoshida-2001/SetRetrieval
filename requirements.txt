@@ -1,0 +1,8 @@
+# This file may be used to create an environment using:
+# $ conda create --name <env> --file <this file>
+# platform: linux-64
+cudnn=8.2.1=cuda11.3_0
+python=3.9.18=h7a1cb2a_0
+tensorflow=2.9.1=gpu_py39hb717771_1
+matplotlib=3.6.3=pypi_0
+tensorflow-addons=0.23.0=pypi_0
