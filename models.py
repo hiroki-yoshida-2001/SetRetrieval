@@ -272,10 +272,9 @@ class CNN(tf.keras.Model):
 #----------------------------
 # set matching network
 class SMN(tf.keras.Model):
-    def __init__(self, isCNN=True, is_set_norm=False, is_cross_norm=True, is_final_linear=True, num_conv_layers=3, num_layers=1, num_heads=2, mode='setRepVec_pivot', baseChn=32, rep_vec_num=1, cnn_class_num=2, max_channel_ratio=2, is_neg_down_sample=False):
+    def __init__(self, isCNN=True, is_set_norm=False, is_cross_norm=True, is_final_linear=True, num_layers=1, num_heads=2, mode='setRepVec_pivot', baseChn=32, rep_vec_num=1, cnn_class_num=2, max_channel_ratio=2, is_neg_down_sample=False):
         super(SMN, self).__init__()
         self.isCNN = isCNN
-        self.num_conv_layers = num_conv_layers
         self.num_layers = num_layers
         self.mode = mode
         self.rep_vec_num = rep_vec_num
