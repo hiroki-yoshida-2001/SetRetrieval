@@ -12,8 +12,6 @@ sys.path.insert(0, "../")
 import models
 import util
 
-import losses
-import metrics
 
 #----------------------------
 # set parameters
@@ -25,6 +23,8 @@ args = parser.parse_args()
 # mode name
 mode = util.mode_name(args.mode)
 
+# setscore_func choice (アイテム間類似度=>集合間の類似度 の関数)
+set_func = util.set_func_name(args.set_func)
 # year of data and max number of items
 year = 2017
 max_item_num = 5
@@ -100,7 +100,7 @@ x_valid, x_size_valid, y_valid = train_generator.data_generation_val()
 # x_test, x_size_test, y_test = test_generator.data_generation_test()
 #----------------------------
 # set-matching network
-model_smn = models.SMN(isCNN=False, is_final_linear=True, is_set_norm=args.is_set_norm, is_cross_norm=args.is_cross_norm, num_layers=args.num_layers, num_heads=args.num_heads, baseChn=args.baseChn, mode=mode, rep_vec_num=rep_vec_num, is_neg_down_sample=is_neg_down_sample)
+model_smn = models.SMN(isCNN=False, is_final_linear=True, is_set_norm=args.is_set_norm, is_cross_norm=args.is_cross_norm, num_layers=args.num_layers, num_heads=args.num_heads, baseChn=args.baseChn, mode=mode, set_func=set_func,rep_vec_num=rep_vec_num, is_neg_down_sample=is_neg_down_sample)
 
 checkpoint_path = os.path.join(modelPath,"model/cp.ckpt")
 checkpoint_dir = os.path.dirname(checkpoint_path)
@@ -111,7 +111,7 @@ result_path = os.path.join(modelPath,"result/result.pkl")
 if not os.path.exists(result_path):
 
     # setting training, loss, metric to model
-    model_smn.compile(optimizer="adam", loss=losses.F1_bert_hinge_loss, metrics = metrics.f1_bert_score, run_eagerly=True)
+    model_smn.compile(optimizer="adam", loss=util.F1_bert_hinge_loss, metrics = util.f1_bert_score, run_eagerly=True)
     
     # execute training
     history = model_smn.fit(train_generator, epochs=epochs, validation_data=((x_valid, x_size_valid), y_valid), shuffle=True, callbacks=[cp_callback,cp_earlystopping])
@@ -142,7 +142,7 @@ pdb.set_trace()
 # calc test loss and accuracy, and save to pickle
 test_loss_path = os.path.join(modelPath, "result/test_loss_acc.txt")
 if not os.path.exists(test_loss_path):
-    model_smn.compile(optimizer='adam',loss=losses.F1_bert_hinge_loss,metrics = metrics.f1_bert_score,run_eagerly=True)
+    model_smn.compile(optimizer='adam',loss=util.F1_bert_hinge_loss,metrics = util.f1_bert_score,run_eagerly=True)
     test_loss, test_acc = model_smn.evaluate((x_test,x_size_test),y_test,batch_size=batch_size,verbose=0)
 
     # compute cmc
