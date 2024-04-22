@@ -24,18 +24,18 @@ def F1_bert_hinge_loss(simMaps:tf.Tensor,scores:tf.Tensor)->tf.Tensor:
         hingelosssum.append(tf.reduce_mean(hingeloss))
         simMap = simMaps[batch_ind][batch_ind]
         sort_score, sort_indices = tf.math.top_k(simMap)
-        positive_loss = 0
+        overlapping_loss = 0
         '''
         if sort_indices[0] == sort_indices[1] == sort_indices[2]:
-            positive_loss += (abs(sort_score[0]-sort_score[1])+abs(sort_score[1]-sort_score[2]))
+            overlapping_loss += (abs(sort_score[0]-sort_score[1])+abs(sort_score[1]-sort_score[2]))
         elif sort_indices[0] == sort_indices[2]:
-            positive_loss += abs(sort_score[0]-sort_score[1])
+            overlapping_loss += abs(sort_score[0]-sort_score[1])
         elif sort_indices[2] == sort_indices[1]:
-            positive_loss += abs(sort_score[2]-sort_score[1])
+            overlapping_loss += abs(sort_score[2]-sort_score[1])
         elif sort_indices[0] == sort_indices[1]:
-            positive_loss += abs(sort_score[0]-sort_score[1])
+            overlapping_loss += abs(sort_score[0]-sort_score[1])
         '''
 
-    Loss = sum(hingelosssum)/len(hingelosssum) + 2.0*(positive_loss/len(simMaps)) 
+    Loss = sum(hingelosssum)/len(hingelosssum) #+(overlapping_loss/len(simMaps)) 
     
     return Loss
