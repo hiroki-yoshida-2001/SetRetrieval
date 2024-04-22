@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 This repository provides data and codes used in the paper *Set representative vector and its asymmetric attention-based transformation for heterogeneous set-to-set matching* submitted to Neurocomputing.
 
 ## Contents
@@ -201,3 +202,6 @@ head mode            layer
   booktitle={Neurocomputing},
   year={2024}
 }
+=======
+# SetRetrieval
+>>>>>>> origin/main
