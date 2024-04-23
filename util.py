@@ -15,10 +15,10 @@ def mode_name(mode):
 
 #----------------------------
 # set func names
-def set_func_name(set_func):
-    set_func_name = ['CS','BERTscore']
+def calc_set_sim_name(calc_set_sim):
+    calc_set_sim_name = ['CS','BERTscore']
 
-    return set_func_name[set_func]
+    return calc_set_sim_name[calc_set_sim]
 #----------------------------
 
 #----------------------------
@@ -32,7 +32,7 @@ def parser_run():
     parser.add_argument('-is_set_norm', type=int, default=1, help='switch of set-normalization (1:on, 0:off), default=1')
     parser.add_argument('-is_cross_norm', type=int, default=1, help='switch of cross-normalization (1:on, 0:off), default=1')
     parser.add_argument('-trial', type=int, default=1, help='index of trial, default=1')
-    parser.add_argument('-set_func', type=int, default=0, help='how to evaluate set similarity, CS:0, BERTscore:1, default=0')
+    parser.add_argument('-calc_set_sim', type=int, default=0, help='how to evaluate set similarity, CS:0, BERTscore:1, default=0')
 
     return parser
 #----------------------------
@@ -49,7 +49,7 @@ def parser_comp():
     parser.add_argument('-is_set_norm', type=int, default=1, help='switch of set-normalization (1:on, 0:off), default=1')
     parser.add_argument('-is_cross_norm', type=int, default=1, help='switch of cross-normalization (1:on, 0:off), default=1')
     parser.add_argument('-trials', default='1,2,3', help='list of indices of trials, default=1,2,3')
-    parser.add_argument('-set_func', type=int, default=0, help='how to evaluate set similarity, CS:0, BERTscore:1, default=0')
+    parser.add_argument('-calc_set_sim', type=int, default=0, help='how to evaluate set similarity, CS:0, BERTscore:1, default=0')
     return parser
 #----------------------------
 
@@ -58,7 +58,7 @@ def parser_comp():
 def plotImg(imgs,set_IDs,msg="",fname="img_in_sets"):
     _, n_item, _, _, _ = imgs.shape
     n_set = len(set_IDs)
-    #fig = plt.figure(figsize=(20,5))
+    # fig = plt.figure(figsize=(20,5))
     fig = plt.figure()
 
     for set_ind in range(n_set):                
@@ -166,13 +166,13 @@ def calc_cmcs(pred, true_grp, batch_size, qry_ind=0, glry_start_ind=1, top_n=1):
     return cmcs
 #----------------------------
 
-#loss function for Set Retrieval task
+# loss function for Set Retrieval task
 def F1_bert_hinge_loss(simMaps:tf.Tensor,scores:tf.Tensor)->tf.Tensor:
-    #pdb.set_trace()
+    # pdb.set_trace()
     # class_labels = tf.transpose(class_labels,[1,0])[0]
     scorepos = tf.argmax(scores)
-    hingelosssum= []
-    #Itemsize = set_labels.shape[1] 
+    hingelosssum = []
+    # Itemsize = set_labels.shape[1] 
     slack_variable = 0.2
     for batch_ind in range(len(simMaps)): 
         
@@ -198,7 +198,7 @@ def F1_bert_hinge_loss(simMaps:tf.Tensor,scores:tf.Tensor)->tf.Tensor:
             overlapping_loss += abs(sort_score[0]-sort_score[1])
         '''
 
-    Loss = sum(hingelosssum)/len(hingelosssum) #+(overlapping_loss/len(simMaps)) 
+    Loss = sum(hingelosssum)/len(hingelosssum) # +(overlapping_loss/len(simMaps)) 
     
     return Loss
 #----------------------------
@@ -217,6 +217,6 @@ def f1_bert_score(simMaps, score):
             accuracy[batch_ind] += 1
 
     return accuracy
-    #return tf.linalg.trace(score)
+    # return tf.linalg.trace(score)
 
 #----------------------------
