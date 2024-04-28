@@ -64,8 +64,19 @@ class trainDataGenerator(tf.keras.utils.Sequence):
             x_tmp_split_pad = [np.vstack([x, np.zeros([np.max([0,self.max_item_num-len(x)]),self.dim])])[:self.max_item_num] for x in x_tmp_split] # zero padding
 
             x_batch.append(x_tmp_split_pad)
-            x_size_batch.append([len(x_tmp_split[i]) for i in range(split_num)])
+
+            # x_size is adjusted with max item number if it's over max item number.  
+            if (len(x_tmp_split[0]) <= self.max_item_num) and (len(x_tmp_split[1]) <= self.max_item_num):
+                x_size_batch.append([len(x_tmp_split[i]) for i in range(split_num)])
+            elif (len(x_tmp_split[0]) > self.max_item_num) and (len(x_tmp_split[1]) <= self.max_item_num):
+                x_size_batch.append([self.max_item_num, len(x_tmp_split[1])])
+            elif (len(x_tmp_split[1]) > self.max_item_num) and (len(x_tmp_split[0]) <= self.max_item_num):
+                x_size_batch.append([len(x_tmp_split[1]), self.max_item_num])
+            else:
+                x_size_batch.append([self.max_item_num, self.max_item_num])
+            
             y_batch.append(np.ones(split_num)*y_tmp[ind])
+
 
         x_batch = np.vstack(x_batch)
         x_size_batch = np.hstack(x_size_batch).astype(np.float32)
