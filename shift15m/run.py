@@ -55,7 +55,7 @@ tf.random.set_seed(args.trial)
 # make Path
 
 # make experiment path containing CNN and set-to-set model
-experimentPath = 'experimenttmp'
+experimentPath = 'experimenttmp2'
 if not os.path.exists(experimentPath):
     os.makedirs(experimentPath)
 
@@ -73,6 +73,7 @@ modelPath = os.path.join(modelPath,f"max_item_num{max_item_num}")
 modelPath = os.path.join(modelPath,f"layer{args.num_layers}")
 modelPath = os.path.join(modelPath,f"num_head{args.num_heads}")
 modelPath = os.path.join(modelPath,f"{args.trial}")
+modelPath = os.path.join(modelPath,f"calc_set_sim{calc_set_sim}")
 if not os.path.exists(modelPath):
     path = os.path.join(modelPath,'model')
     os.makedirs(path)
@@ -104,21 +105,21 @@ model_smn = models.SMN(isCNN=False, is_final_linear=True, is_set_norm=args.is_se
 
 checkpoint_path = os.path.join(modelPath,"model/cp.ckpt")
 checkpoint_dir = os.path.dirname(checkpoint_path)
-cp_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_f1_bert_score', save_weights_only=True, mode='max', save_best_only=True, save_freq='epoch', verbose=1)
-cp_earlystopping = tf.keras.callbacks.EarlyStopping(monitor='val_f1_bert_score', patience=patience, mode='max', min_delta=0.001, verbose=1)
+cp_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path, monitor='val_Set_accuracy', save_weights_only=True, mode='max', save_best_only=True, save_freq='epoch', verbose=1)
+cp_earlystopping = tf.keras.callbacks.EarlyStopping(monitor='val_Set_accuracy', patience=patience, mode='max', min_delta=0.001, verbose=1)
 result_path = os.path.join(modelPath,"result/result.pkl")
 
 if not os.path.exists(result_path):
 
     # setting training, loss, metric to model
-    model_smn.compile(optimizer="adam", loss=util.F1_bert_hinge_loss, metrics=util.f1_bert_score, run_eagerly=True)
+    model_smn.compile(optimizer="adam", loss=util.Set_hinge_loss, metrics=util.Set_accuracy, run_eagerly=True)
     
     # execute training
     history = model_smn.fit(train_generator, epochs=epochs, validation_data=((x_valid, x_size_valid), y_valid), shuffle=True, callbacks=[cp_callback,cp_earlystopping])
 
     # accuracy and loss
-    acc = history.history['f1_bert_score']
-    val_acc = history.history['val_f1_bert_score']
+    acc = history.history['Set_accuracy']
+    val_acc = history.history['val_Set_accuracy']
     loss = history.history['loss']
     val_loss = history.history['val_loss']
 
@@ -142,7 +143,7 @@ pdb.set_trace()
 # calc test loss and accuracy, and save to pickle
 test_loss_path = os.path.join(modelPath, "result/test_loss_acc.txt")
 if not os.path.exists(test_loss_path):
-    model_smn.compile(optimizer='adam',loss=util.F1_bert_hinge_loss,metrics=util.f1_bert_score,run_eagerly=True)
+    model_smn.compile(optimizer='adam',loss=util.Set_hinge_loss,metrics=util.Set_accuracy,run_eagerly=True)
     test_loss, test_acc = model_smn.evaluate((x_test,x_size_test), y_test,batch_size=batch_size,verbose=0)
 
     # compute cmc

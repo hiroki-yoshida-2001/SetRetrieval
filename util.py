@@ -3,6 +3,7 @@ import matplotlib.pylab as plt
 import tensorflow as tf
 import numpy as np
 import os
+import pdb
 
 
 #----------------------------
@@ -166,57 +167,49 @@ def calc_cmcs(pred, true_grp, batch_size, qry_ind=0, glry_start_ind=1, top_n=1):
     return cmcs
 #----------------------------
 
-# loss function for Set Retrieval task
-def F1_bert_hinge_loss(simMaps:tf.Tensor,scores:tf.Tensor)->tf.Tensor:
-    # pdb.set_trace()
-    # class_labels = tf.transpose(class_labels,[1,0])[0]
-    scorepos = tf.argmax(scores)
-    hingelosssum = []
-    # Itemsize = set_labels.shape[1] 
+def Set_hinge_loss(scores:tf.Tensor, y_true:tf.Tensor)->tf.Tensor:
+
+    """Loss function for Set Retrieval task
+    In for loop, getting set similarity score (between pred and gallery y)
+    , getting positive score and the others by y_true (set labels, which identify positive position), and calculating hingeloss """
+    
+    Set_hinge_losssum = []
     slack_variable = 0.2
-    for batch_ind in range(len(simMaps)): 
+    # scores: (nSet_x, nSet_y), y_true: (nSet_x, nSet_y)
+    for batch_ind in range(len(y_true)): 
         
-        f1_score = scores[batch_ind]
+        # score , bert_score or CS score between \hat y [batch_ind] and y : (nSet_y,) 
+        score = scores[batch_ind]
+        # positive_score : (1, )
+        # negative_score : (nSet_y - 1, )
+        positive_score = tf.boolean_mask(score, tf.equal(y_true[batch_ind], 1))
+        negative_score = tf.boolean_mask(score, tf.equal(y_true[batch_ind], 0))
 
-        positive_score = tf.gather(f1_score, batch_ind)
-        # n番目以外のインデックスの要素を取り出す
-        negative_score = tf.gather(scores, tf.where(tf.not_equal(tf.range(tf.shape(f1_score)[0]), batch_ind)))
-
+        # hingeloss : (nSet_y - 1, )
         hingeloss = tf.maximum(negative_score - positive_score + slack_variable , 0.0)
-        hingelosssum.append(tf.reduce_mean(hingeloss))
-        simMap = simMaps[batch_ind][batch_ind]
-        sort_score, sort_indices = tf.math.top_k(simMap)
-        overlapping_loss = 0
-        '''
-        if sort_indices[0] == sort_indices[1] == sort_indices[2]:
-            overlapping_loss += (abs(sort_score[0]-sort_score[1])+abs(sort_score[1]-sort_score[2]))
-        elif sort_indices[0] == sort_indices[2]:
-            overlapping_loss += abs(sort_score[0]-sort_score[1])
-        elif sort_indices[2] == sort_indices[1]:
-            overlapping_loss += abs(sort_score[2]-sort_score[1])
-        elif sort_indices[0] == sort_indices[1]:
-            overlapping_loss += abs(sort_score[0]-sort_score[1])
-        '''
+        Set_hinge_losssum.append(tf.reduce_mean(hingeloss))
+        
 
-    Loss = sum(hingelosssum)/len(hingelosssum) # +(overlapping_loss/len(simMaps)) 
+    Loss = sum(Set_hinge_losssum)/len(Set_hinge_losssum)
     
     return Loss
 #----------------------------
 
-def f1_bert_score(simMaps, score):
+def Set_accuracy(score:tf.Tensor, y_true:tf.Tensor):
     
-    """アイテム集合と予測ベクトルとのbertスコアを評価する関数"""
-    """対角成分のスコアが上位10%にあれば1 そうでなければ0"""
+    """Custom Metrics Function to evaluate set similarity between pred item set \hat y and gallery y"""
+    """1 : positive_score is in top10 % of set similarity pairs , 0 : otherwise"""
+    # threshold K 
     threk = int(len(score)*0.1)
     
     accuracy = np.zeros((len(score), 1))
+
     for batch_ind in range(len(score)):
         f1_score = score[batch_ind]
-        sort_score, sort_index = tf.math.top_k(f1_score, k=threk)
-        if batch_ind in sort_index:
+        _, topscore_index = tf.nn.top_k(f1_score, k=threk)
+        if tf.where(tf.equal(y_true[batch_ind], 1))[0].numpy() in topscore_index: # (tf.where(tf.equal(y_true[batch_ind], 1))[0].numpy()) finds positive index.
             accuracy[batch_ind] += 1
 
     return accuracy
-    # return tf.linalg.trace(score)
 
 #----------------------------
