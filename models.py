@@ -79,13 +79,13 @@ class cross_set_score(tf.keras.layers.Layer):
 
     def call(self, x, nItem):
         
-        if not type(x) is tuple:
+        if not type(x) is tuple: # x :(nSet_x, nSet_y, nItemMax, dim)
             nSet_x = tf.shape(x)[0]
             nSet_y = tf.shape(x)[1]
             nItemMax = tf.shape(x)[2]
             multi_input = False
         else:
-            x, y = x
+            x, y = x # x, y : (nSet_x(y), nItemMax, dim)
             nSet_x = tf.shape(x)[0]
             nSet_y = tf.shape(y)[0]
             nItemMax = tf.shape(x)[1]
@@ -434,7 +434,7 @@ class SMN(tf.keras.Model):
         # e.g, f1_scores[0,1] (,1) means BERT_score (set similarity) between y[0] and x[1]
         # ------------------------------------------------------
 
-        if not type(x) is tuple:
+        if not type(x) is tuple: # x :(nSet_x, nSet_y, nItemMax, dim)
             nSet_x = tf.shape(x)[0]
             nSet_y = tf.shape(x)[1]
             nItemMax = tf.shape(x)[2]
@@ -456,7 +456,7 @@ class SMN(tf.keras.Model):
                 for i in range(len(cos_sim))
             ]
         else:
-            x, y = x
+            x, y = x # x, y : (nSet_x(y), nItemMax, dim)
             nSet_x = tf.shape(x)[0]
             nSet_y = tf.shape(y)[0]
             nItemMax = tf.shape(x)[1]
