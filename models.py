@@ -83,16 +83,16 @@ class cross_set_score(tf.keras.layers.Layer):
             nSet_x = tf.shape(x)[0]
             nSet_y = tf.shape(x)[1]
             nItemMax = tf.shape(x)[2]
-            y_flag = False
+            multi_input = False
         else:
             x, y = x
             nSet_x = tf.shape(x)[0]
             nSet_y = tf.shape(y)[0]
             nItemMax = tf.shape(x)[1]
-            y_flag = True
+            multi_input = True
         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
 
-        if not y_flag:
+        if not multi_input:
             # linear transofrmation from (nSet_x, nSet_y, nItemMax, Xdim) to (nSet_x, nSet_y, nItemMax, head_size*num_heads)
             x = self.linear(x)
 
@@ -107,7 +107,7 @@ class cross_set_score(tf.keras.layers.Layer):
                 ,axis=1),axis=1)/nItem[i]/nItem[j]
                 for i in range(nSet_x)] for j in range(nSet_y)]
             )
-        if y_flag:
+        else:
             # linear transofrmation from (nSet_x, nSet_y, nItemMax, Xdim) to (nSet_x, nSet_y, nItemMax, head_size*num_heads)
             x = self.linear(x)
             y = self.linear(y)
