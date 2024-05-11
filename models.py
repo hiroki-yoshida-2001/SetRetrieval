@@ -77,37 +77,59 @@ class cross_set_score(tf.keras.layers.Layer):
         self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,use_bias=False)
         self.linear2 = tf.keras.layers.Dense(1,use_bias=False)
 
-    def call(self, x, x_size):
-        nSet_y_pred = tf.shape(x)[0]
-        nSet_y = tf.shape(x)[1]
-        nItemMax = tf.shape(x)[2]
+    def call(self, x, nItem):
+        
+        if not type(x) is tuple:
+            nSet_x = tf.shape(x)[0]
+            nSet_y = tf.shape(x)[1]
+            nItemMax = tf.shape(x)[2]
+            y_flag = False
+        else:
+            x, y = x
+            nSet_x = tf.shape(x)[0]
+            nSet_y = tf.shape(y)[0]
+            nItemMax = tf.shape(x)[1]
+            y_flag = True
         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
 
-        # pred Item size is all nItemMax_y_pred(=5), differs from x_size .
-        y_pred_size = tf.fill(x_size.shape, tf.cast(nItemMax, tf.float32))
+        if not y_flag:
+            # linear transofrmation from (nSet_x, nSet_y, nItemMax, Xdim) to (nSet_x, nSet_y, nItemMax, head_size*num_heads)
+            x = self.linear(x)
 
+            # reshape (nSet_x, nSet_y, nItemMax, head_size*num_heads) to (nSet_x, nSet_y, nItemMax, num_heads, head_size)
+            # transpose (nSet_x, nSet_y, nItemMax, num_heads, head_size) to (nSet_x, nSet_y, num_heads, nItemMax, head_size)
+            x = tf.transpose(tf.reshape(x,[nSet_x, nSet_y, nItemMax, self.num_heads, self.head_size]),[0,1,3,2,4])
+
+            scores = tf.stack(
+            [[
+                tf.reduce_sum(tf.reduce_sum(
+                tf.keras.layers.LeakyReLU()(tf.matmul(x[j,i],tf.transpose(x[i,j],[0,2,1]))/sqrt_head_size)
+                ,axis=1),axis=1)/nItem[i]/nItem[j]
+                for i in range(nSet_x)] for j in range(nSet_y)]
+            )
+        if y_flag:
+            # linear transofrmation from (nSet_x, nSet_y, nItemMax, Xdim) to (nSet_x, nSet_y, nItemMax, head_size*num_heads)
+            x = self.linear(x)
+            y = self.linear(y)
+            # reshape (nSet_x, nSet_y, nItemMax, head_size*num_heads) to (nSet_x, nSet_y, nItemMax, num_heads, head_size)
+            # transpose (nSet_x, nSet_y, nItemMax, num_heads, head_size) to (nSet_x, nSet_y, num_heads, nItemMax, head_size)
+            x = tf.transpose(tf.reshape(x,[nSet_x, nItemMax, self.num_heads, self.head_size]),[0,2,1,3])
+            y = tf.transpose(tf.reshape(y,[nSet_y, nItemMax, self.num_heads, self.head_size]),[0,2,1,3])
+
+            scores = tf.stack(
+            [[
+                tf.reduce_sum(tf.reduce_sum(
+                tf.keras.layers.LeakyReLU()(tf.matmul(y[j],tf.transpose(x[i],[0,2,1]))/sqrt_head_size)
+                , axis=1), axis=1)/nItem[i]/tf.cast(nItemMax, tf.float32)
+                for i in range(nSet_x)] for j in range(nSet_y)]
+            )
         
-        # transpose x (nSet_y_pred, nSet_y, nItemMax, Xdim, 2) to (nSet_y_pred, nSet_y, nItemMax, 2, Xdim)
-        x = tf.transpose(x, [0,1,2,4,3])
-        # linear transofrmation from (nSet_y_pred, nSet_y, nItemMax, 2, Xdim) to (nSet_y_pred, nSet_y, nItemMax, 2, head_size*num_heads)
-        x = self.linear(x)
-
-        # reshape (nSet_y_pred, nSet_y, nItemMax, 2, head_size*num_heads) to (nSet_y_pred, nSet_y, nItemMax, 2, num_heads, head_size)
-        # transpose (nSet_y_pred, nSet_y, nItemMax, 2, num_heads, head_size) to (nSet_y_pred, nSet_y, num_heads, nItemMax, head_size, 2)
-        x = tf.transpose(tf.reshape(x,[nSet_y_pred, nSet_y, nItemMax, 2, self.num_heads, self.head_size]),[0,1,4,2,5,3])
         
         # compute inner products between all pairs of items with cross-set feature (cseft)
         # Between set #1 and set #2, cseft x[0,1] and x[1,0] are extracted to compute inner product when nItemMax=2
         # More generally, between set #i and set #j, cseft x[i,j] and x[j,i] are extracted.
-        # Outputing (nSet_y_pred, nSet_y, num_heads)-score map        
-        scores = tf.stack(
-            [[
-                tf.reduce_sum(tf.reduce_sum(
-                tf.keras.layers.LeakyReLU()(tf.matmul(x[j,i][:,:,:,0],tf.transpose(x[j,i][:,:,:,1],[0,2,1]))/sqrt_head_size)
-                ,axis=1),axis=1)/x_size[i]/y_pred_size[j]
-                for i in range(nSet_y)] for j in range(nSet_y_pred)]
-            )
-
+        # Outputing (nSet_y_pred, nSet_y, num_heads)-score map 
+        
         # linearly combine multi-head score maps (nSet_y_pred, nSet_y, num_heads) to (nSet_y_pred, nSet_y, 1)
         scores = self.linear2(scores)
 
@@ -386,55 +408,76 @@ class SMN(tf.keras.Model):
 
         return predCNN, y_pred, debug
     
-    # compute cosine similarity between all pairs of pred items x and  gallery y and BERTscore.
-    def BERT_set_score(self, x, x_size,beta=0.2):
+    # compute cosine similarity between all pairs of items and BERTscore.
+    def BERT_set_score(self, x, nItem,beta=0.2):
         
-        # y_pred : pred item set , y : gallery , x_size : each set size in gallery .
-        nSet_y_pred, nSet_y, nItemMax_y_pred, dim_y_pred, _ = x.shape 
+        # cos_sim : compute cosine similarity  between all pairs of items
+        # -----------------------------------------------------
+        # Outputing (nSet_y, nSet_x, nItemMax, nItemMax)
+        # e.g, cos_sim[1][0] (nItemMax_y, nItemMax_x) means cosine similarity between y[1] (nItemMax, dim) and x[0] (nItemMax, dim)
+        # -----------------------------------------------------
 
-        # pred Item size is all nItemMax_y_pred(=5), differs from x_size .
-        y_pred_size = tf.fill(x_size.shape, tf.cast(nItemMax_y_pred, tf.float32))
-
-        # compute cosine similarity  between all pairs of items
-        # x[j,i][:,:,0] => pred item (y_pred) for j query set, x[j,i][:,:,1] => gallery item (y) for i query set
-
-        # y_pred, y is normalized in the direction of dim 
-        # Outputing (nSet_y_pred, nSet_y, nItemMax_y_pred, nItemMax_y) -> cosine similarity (between all pairs)
-        # e.g, cos_sim[1][0] (nItemMax_y_pred, nItemMax_y) means cosine similarity between y_pred[1] (nItemMax_y_pred, dim_y_pred) and y[0] (nItemMax_y, dim_y)
-
-        cos_sim = tf.stack(
-            [[                
-                tf.matmul(tf.nn.l2_normalize(x[j,i][:,:,0], axis=-1),tf.transpose(tf.nn.l2_normalize(x[j,i][:,:,1], axis=-1),[1,0]))
-                for i in range(nSet_y)] for j in range(nSet_y_pred)]
-            )
-
-        # cos_sim[i] (Cosine similarity between y_pred[i](x[i,:][:,:,0]) and each item of y(x[i,:][:,:,1])) : (nSet_y, nItemMax_y_pred, nItemMax_y)
-
-        # As to caluclating y_neighbor (recall), max score is extracted in row direction => tf.reduce_max(cos_sim[i], axis=2) : (nSet_y, nItemMax_y)
-            # average each item score  => tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=2), axis=1, keepdims=True) / tf.expand_dims(x_size,axis=1) : (nSet_y, 1)
+        # f1_scores : BERT_score with cos_sim
+        # ------------------------------------------------------
+        # Outputing (nSet_y, nSet_x, 1)
+        # Using cos_sim , precision (y_neighbor) and recall (x_neighbor) are caluculated.
+            # As to caluclating x_neighbor (recall), max score is extracted in row direction => tf.reduce_max(cos_sim[i], axis=2) : (nSet_x, nItemMax)
+            # average each item score  => tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=2), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1) : (nSet_x, 1)
         
-        # As to caluclating y_pred_neighbor (precision), max score is extracted in column direction (nItemMax_y) -> tf.reduce_max(cos_sim[i], axis=1) : (nSet_y, nItemMax_y_pred)
-            # average each item score =>  tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(y_pred_size,axis=1) : (nSet_y, 1)
-        
-        # f1_scores = 2 * (y_pred_neighbor * y_neighbor) / (y_pred_neighbor + y_neighbor) ,  caluclate over all y_pred => (nSet_y_pred, nSet_y, 1)
-        
-        # ---------------------------
-        # In batch loop , cos_sim[i] (nSet_y, nItemMax_y_pred, nItemMax_y) is extracted and calculate f1_score through nSet_y_pred.
-        # for precision caluculating, -inf masking is processed before searching neighbor score.
-            # if cos_sim[i] has 0 value , we regard the value as a similarity between y_pred[i] and zero padding item in y, replacing -inf in order for not choosing . 
+            # As to caluclating y_neighbor (precision), max score is extracted in column direction (nItemMax_y) -> tf.reduce_max(cos_sim[i], axis=1) : (nSet_x, nItemMax)
+            # average each item score =>  tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(y_item,axis=1) : (nSet_x, 1)
+            # for precision caluculating, -inf masking is processed before searching neighbor score.
+            # if cos_sim[i] has 0 value , we regard the value as a similarity between y[i] and zero padding item in x, replacing -inf in order for not choosing . 
             # tf.where(tf.not_equal(cos_sim[i], 0), cos_sim[i], tf.fill(cos_sim[i].shape, float('-inf')))
         
-        f1_scores = [
+        # f1_scores = 2 * (y_neighbor * x_neighbor) / (y_neighbor + x_neighbor)
+        # e.g, f1_scores[0,1] (,1) means BERT_score (set similarity) between y[0] and x[1]
+        # ------------------------------------------------------
+
+        if not type(x) is tuple:
+            nSet_x = tf.shape(x)[0]
+            nSet_y = tf.shape(x)[1]
+            nItemMax = tf.shape(x)[2]
+
+            cos_sim = tf.stack(
+            [[                
+                tf.matmul(tf.nn.l2_normalize(x[j,i], axis=-1),tf.transpose(tf.nn.l2_normalize(x[i,j], axis=-1),[0,2,1]))
+                for i in range(nSet_x)] for j in range(nSet_y)]
+            )
+            f1_scores = [
             
                 2 * (
-                    tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(x_size,axis=1) *
-                    tf.reduce_sum(tf.reduce_max(tf.where(tf.not_equal(cos_sim[i], 0), cos_sim[i], tf.fill(cos_sim[i].shape, float('-inf'))), axis=2), axis=1, keepdims=True) / tf.expand_dims(y_pred_size,axis=1)
+                    tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1) *
+                    tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=2), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1)
                 ) / (
-                    tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(x_size,axis=1) +
-                    tf.reduce_sum(tf.reduce_max(tf.where(tf.not_equal(cos_sim[i], 0), cos_sim[i], tf.fill(cos_sim[i].shape, float('-inf'))), axis=2), axis=1, keepdims=True) / tf.expand_dims(y_pred_size,axis=1)
+                    tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1) +
+                    tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=2), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1)
                 )
-            for i in range(len(cos_sim))
-        ]
+                for i in range(len(cos_sim))
+            ]
+        else:
+            x, y = x
+            nSet_x = tf.shape(x)[0]
+            nSet_y = tf.shape(y)[0]
+            nItemMax = tf.shape(x)[1]
+
+            cos_sim = tf.stack(
+            [[                
+                tf.matmul(tf.nn.l2_normalize(y[j], axis=-1),tf.transpose(tf.nn.l2_normalize(x[i], axis=-1),[1,0]))
+                for i in range(nSet_x)] for j in range(nSet_y)]
+            )
+            f1_scores = [
+            
+                2 * (
+                    tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1) *
+                    tf.reduce_sum(tf.reduce_max(tf.where(tf.not_equal(cos_sim[i], 0), cos_sim[i], tf.fill(cos_sim[i].shape, float('-inf'))), axis=2), axis=1, keepdims=True) / tf.cast(nItemMax, tf.float32)
+                ) / (
+                    tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1) +
+                    tf.reduce_sum(tf.reduce_max(tf.where(tf.not_equal(cos_sim[i], 0), cos_sim[i], tf.fill(cos_sim[i].shape, float('-inf'))), axis=2), axis=1, keepdims=True) / tf.cast(nItemMax, tf.float32)
+                )
+                for i in range(len(cos_sim))
+            ]
+        
         # ------------------------------
         f1_scores = tf.stack(f1_scores, axis=0)
 
@@ -508,20 +551,13 @@ class SMN(tf.keras.Model):
             y_true = self.cross_set_label(y_true)
             y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
 
-            # concatenate pred set and gallery => Z (nSet, nSet, nItemMax, dim, 2).
-            predSMN = tf.expand_dims(predSMN, axis=0) # (1, nSet, nItemMax, dim)
-            gallery = tf.expand_dims(gallery, axis=0) # (1, nSet, nItemMax, dim)
-
-            predSMN = tf.tile(tf.transpose(predSMN,[1,0,2,3]),(1,x.shape[0],1,1,)) # (nSet, nSet, nItemMax, dim)
-            gallery = tf.tile(gallery, (x.shape[0],1,1,1)) # (nSet, nSet, nItemMax, dim)
-
-            Z = tf.concat([tf.expand_dims(predSMN,axis=-1), tf.expand_dims(gallery,axis=-1)], axis=-1) # (nSet, nSet, nItemMax, dim, 2)
 
             # compute similairty with gallery and f1_bert_score
+            # input gallery as x and predSMN as y in each bellow set similarity function. 
             if self.calc_set_sim == 'CS':
-                set_score = self.cross_set_score(Z, x_size)
+                set_score = self.cross_set_score((gallery, predSMN), x_size)
             elif self.calc_set_sim == 'BERTscore':
-                set_score = self.BERT_set_score(Z, x_size)
+                set_score = self.BERT_set_score((gallery, predSMN), x_size)
             else:
                 print("指定された集合間類似度を測る関数は存在しません")
                 sys.exit()
@@ -573,20 +609,12 @@ class SMN(tf.keras.Model):
         y_true = self.cross_set_label(y_true)
         y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
 
-        # concatenate pred set and gallery => Z (nSet, nSet, nItemMax, dim, 2).
-        predSMN = tf.expand_dims(predSMN, axis=0) # (1, nSet, nItemMax, dim)
-        gallery = tf.expand_dims(gallery, axis=0) # (1, nSet, nItemMax, dim)
-
-        predSMN = tf.tile(tf.transpose(predSMN,[1,0,2,3]),(1,x.shape[0],1,1,)) # (nSet, nSet, nItemMax, dim)
-        gallery = tf.tile(gallery, (x.shape[0],1,1,1)) # (nSet, nSet, nItemMax, dim)
-
-        Z = tf.concat([tf.expand_dims(predSMN,axis=-1), tf.expand_dims(gallery,axis=-1)], axis=-1) # (nSet, nSet, nItemMax, dim, 2)
-
         # compute similairty with gallery and f1_bert_score
+        # input gallery as x and predSMN as y in each bellow set similarity function. 
         if self.calc_set_sim == 'CS':
-            set_score = self.cross_set_score(Z, x_size)
+            set_score = self.cross_set_score((gallery, predSMN), x_size)
         elif self.calc_set_sim == 'BERTscore':
-            set_score = self.BERT_set_score(Z, x_size)
+            set_score = self.BERT_set_score((gallery, predSMN), x_size)
         else:
             print("指定された集合間類似度を測る関数は存在しません")
             sys.exit()
