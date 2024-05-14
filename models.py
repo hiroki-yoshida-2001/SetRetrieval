@@ -78,21 +78,19 @@ class cross_set_score(tf.keras.layers.Layer):
         self.linear2 = tf.keras.layers.Dense(1,use_bias=False)
 
     def call(self, x, nItem):
+
+        sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
+        # compute inner products between all pairs of items with cross-set feature (cseft)
+        # Between set #1 and set #2, cseft x[0,1] and x[1,0] are extracted to compute inner product when nItemMax=2
+        # More generally, between set #i and set #j, cseft x[i,j] and x[j,i] are extracted.
+        # Outputing (nSet_y, nSet_x, num_heads)-score map 
         
+        # if input x is not tuple, existing methods are done.
         if not type(x) is tuple: # x :(nSet_x, nSet_y, nItemMax, dim)
             nSet_x = tf.shape(x)[0]
             nSet_y = tf.shape(x)[1]
             nItemMax = tf.shape(x)[2]
-            multi_input = False
-        else:
-            x, y = x # x, y : (nSet_x(y), nItemMax, dim)
-            nSet_x = tf.shape(x)[0]
-            nSet_y = tf.shape(y)[0]
-            nItemMax = tf.shape(x)[1]
-            multi_input = True
-        sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
 
-        if not multi_input:
             # linear transofrmation from (nSet_x, nSet_y, nItemMax, Xdim) to (nSet_x, nSet_y, nItemMax, head_size*num_heads)
             x = self.linear(x)
 
@@ -108,6 +106,11 @@ class cross_set_score(tf.keras.layers.Layer):
                 for i in range(nSet_x)] for j in range(nSet_y)]
             )
         else:
+            x, y = x # x, y : (nSet_x(y), nItemMax, dim)
+            nSet_x = tf.shape(x)[0]
+            nSet_y = tf.shape(y)[0]
+            nItemMax = tf.shape(x)[1]
+
             # linear transofrmation from (nSet_x, nSet_y, nItemMax, Xdim) to (nSet_x, nSet_y, nItemMax, head_size*num_heads)
             x = self.linear(x)
             y = self.linear(y)
@@ -123,13 +126,7 @@ class cross_set_score(tf.keras.layers.Layer):
                 , axis=1), axis=1)/nItem[i]/tf.cast(nItemMax, tf.float32)
                 for i in range(nSet_x)] for j in range(nSet_y)]
             )
-        
-        
-        # compute inner products between all pairs of items with cross-set feature (cseft)
-        # Between set #1 and set #2, cseft x[0,1] and x[1,0] are extracted to compute inner product when nItemMax=2
-        # More generally, between set #i and set #j, cseft x[i,j] and x[j,i] are extracted.
-        # Outputing (nSet_y, nSet_x, num_heads)-score map 
-        
+             
         # linearly combine multi-head score maps (nSet_y, nSet_x, num_heads) to (nSet_y, nSet_x, 1)
         scores = self.linear2(scores)
 
