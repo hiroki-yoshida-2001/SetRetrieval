@@ -111,8 +111,8 @@ class cross_set_score(tf.keras.layers.Layer):
             # linear transofrmation from (nSet_x, nSet_y, nItemMax, Xdim) to (nSet_x, nSet_y, nItemMax, head_size*num_heads)
             x = self.linear(x)
             y = self.linear(y)
-            # reshape (nSet_x, nSet_y, nItemMax, head_size*num_heads) to (nSet_x, nSet_y, nItemMax, num_heads, head_size)
-            # transpose (nSet_x, nSet_y, nItemMax, num_heads, head_size) to (nSet_x, nSet_y, num_heads, nItemMax, head_size)
+            # reshape (nSet_x (nSet_y), nItemMax, head_size*num_heads) to (nSet_x (nSet_y), nItemMax, num_heads, head_size)
+            # transpose (nSet_x (nSet_y), nItemMax, num_heads, head_size) to (nSet_x (nSet_y), num_heads, nItemMax, head_size)
             x = tf.transpose(tf.reshape(x,[nSet_x, nItemMax, self.num_heads, self.head_size]),[0,2,1,3])
             y = tf.transpose(tf.reshape(y,[nSet_y, nItemMax, self.num_heads, self.head_size]),[0,2,1,3])
 
@@ -128,9 +128,9 @@ class cross_set_score(tf.keras.layers.Layer):
         # compute inner products between all pairs of items with cross-set feature (cseft)
         # Between set #1 and set #2, cseft x[0,1] and x[1,0] are extracted to compute inner product when nItemMax=2
         # More generally, between set #i and set #j, cseft x[i,j] and x[j,i] are extracted.
-        # Outputing (nSet_y_pred, nSet_y, num_heads)-score map 
+        # Outputing (nSet_y, nSet_x, num_heads)-score map 
         
-        # linearly combine multi-head score maps (nSet_y_pred, nSet_y, num_heads) to (nSet_y_pred, nSet_y, 1)
+        # linearly combine multi-head score maps (nSet_y, nSet_x, num_heads) to (nSet_y, nSet_x, 1)
         scores = self.linear2(scores)
 
         return scores
