@@ -34,6 +34,8 @@ def parser_run():
     parser.add_argument('-is_cross_norm', type=int, default=1, help='switch of cross-normalization (1:on, 0:off), default=1')
     parser.add_argument('-trial', type=int, default=1, help='index of trial, default=1')
     parser.add_argument('-calc_set_sim', type=int, default=0, help='how to evaluate set similarity, CS:0, BERTscore:1, default=0')
+    parser.add_argument('-use_Cvec', type=bool, default=True, help='Whether use Cvec')
+    parser.add_argument('-is_Cvec_linear', type=bool, default=False, help='Whether learn FC_projection for Cluster seed vec')
 
     return parser
 #----------------------------

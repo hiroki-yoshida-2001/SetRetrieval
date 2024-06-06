@@ -11,7 +11,9 @@ import make_dataset as data
 sys.path.insert(0, "../")
 import models
 import util
-
+from pathlib import Path
+import glob
+from PIL import Image
 
 #----------------------------
 # set parameters
@@ -25,6 +27,9 @@ mode = util.mode_name(args.mode)
 
 # setscore_func choice (アイテム間類似度=>集合間の類似度 の関数)
 calc_set_sim = util.calc_set_sim_name(args.calc_set_sim)
+
+# 4096次元の候補ベクトルの次元削減FC層を学習するか否か
+is_Cvec_linear = args.is_Cvec_linear
 # year of data and max number of items
 year = 2017
 max_item_num = 5
@@ -37,25 +42,48 @@ epochs = 100
 patience = 5
 
 # batch size
-batch_size = 10
+batch_size = 50
 
-# number of representive vectors
-rep_vec_num = 5
+# number of representive vectors 5=>41
+rep_vec_num = 41
 
 # negative down sampling
 is_neg_down_sample = True
 
-# set random seed
+# set random seed (gpu)
 os.environ['TF_DETERMINISTIC_OPS'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 np.random.seed(args.trial)
 tf.random.set_seed(args.trial)
 #----------------------------
+
+
+# ---------------------------
+# load init seed vectors
+pickle_path = "pickle_data"
+init_seed_pickle_path = os.path.join(pickle_path, "item_seed/item_seed.pkl")
+
+if not os.path.exists(init_seed_pickle_path):
+    print("init_seed vectors haven't been generated ")
+    seed_vectors = 0
+else:
+    print("Loading init_seed vectors...")
+    with open(init_seed_pickle_path,'rb') as fp:
+        seed_vectors = pickle.load(fp)
+    
+    rep_vec_num  = len(seed_vectors)
+    seed_vectors = seed_vectors.tolist()
+
+    if not args.use_Cvec:
+        seed_vectors = 0
 
 #----------------------------
 # make Path
 
 # make experiment path containing CNN and set-to-set model
-experimentPath = 'experimenttmp2'
+# experiment path を動的に作成する
+pdb.set_trace()
+experimentPath = 'experiment'
 if not os.path.exists(experimentPath):
     os.makedirs(experimentPath)
 
@@ -73,6 +101,8 @@ modelPath = os.path.join(modelPath,f"max_item_num{max_item_num}")
 modelPath = os.path.join(modelPath,f"layer{args.num_layers}")
 modelPath = os.path.join(modelPath,f"num_head{args.num_heads}")
 modelPath = os.path.join(modelPath,f"{args.trial}")
+modelPath = os.path.join(modelPath,f"use_Cvec_{args.use_Cvec}")
+modelPath = os.path.join(modelPath,f"is_Cvec_linear_{is_Cvec_linear}")
 modelPath = os.path.join(modelPath,f"calc_set_sim{calc_set_sim}")
 if not os.path.exists(modelPath):
     path = os.path.join(modelPath,'model')
@@ -97,11 +127,12 @@ x_valid, x_size_valid, y_valid = train_generator.data_generation_val()
 #----------------------------
 
 # set data generator for evaluation and test (similar settings using test.pkl as train and valid)
-# test_generator = data.trainDataGenerator(year = year, batch_size = batch_size, max_item_num = max_item_num)
-# x_test, x_size_test, y_test = test_generator.data_generation_test()
+test_generator = data.trainDataGenerator(year = year, batch_size = batch_size, max_item_num = max_item_num)
+x_test, x_size_test, y_test, category1_test, category2_test, item_label_test = test_generator.data_generation_test()
 #----------------------------
+
 # set-matching network
-model_smn = models.SMN(isCNN=False, is_final_linear=True, is_set_norm=args.is_set_norm, is_cross_norm=args.is_cross_norm, num_layers=args.num_layers, num_heads=args.num_heads, baseChn=args.baseChn, mode=mode, calc_set_sim=calc_set_sim, rep_vec_num=rep_vec_num, is_neg_down_sample=is_neg_down_sample)
+model_smn = models.SMN(isCNN=False, is_final_linear=True, is_set_norm=args.is_set_norm, is_cross_norm=args.is_cross_norm, num_layers=args.num_layers, num_heads=args.num_heads, baseChn=args.baseChn, mode=mode, calc_set_sim=calc_set_sim, rep_vec_num=rep_vec_num, seed_init = seed_vectors, is_neg_down_sample=is_neg_down_sample, is_Cvec_linear=is_Cvec_linear)
 
 checkpoint_path = os.path.join(modelPath,"model/cp.ckpt")
 checkpoint_dir = os.path.dirname(checkpoint_path)
@@ -113,7 +144,6 @@ if not os.path.exists(result_path):
 
     # setting training, loss, metric to model
     model_smn.compile(optimizer="adam", loss=util.Set_hinge_loss, metrics=util.Set_accuracy, run_eagerly=True)
-    
     # execute training
     history = model_smn.fit(train_generator, epochs=epochs, validation_data=((x_valid, x_size_valid), y_valid), shuffle=True, callbacks=[cp_callback,cp_earlystopping])
 
@@ -137,48 +167,6 @@ else:
     print("load models")
     model_smn.load_weights(checkpoint_path)
 #----------------------------
-pdb.set_trace()
-#---------------------------------
-'''
-# calc test loss and accuracy, and save to pickle
-test_loss_path = os.path.join(modelPath, "result/test_loss_acc.txt")
-if not os.path.exists(test_loss_path):
-    model_smn.compile(optimizer='adam',loss=util.Set_hinge_loss,metrics=util.Set_accuracy,run_eagerly=True)
-    test_loss, test_acc = model_smn.evaluate((x_test,x_size_test), y_test,batch_size=batch_size,verbose=0)
-
-    # compute cmc
-    predSMN, dot_score, bert_score = model_smn.predict((x_test[:7700], x_size_test[:7700]), batch_size=batch_size, verbose=1)
-    
-    # cmcs = util.calc_cmcs(predSMN, y_test, batch_size=test_batch_size)
-
-    with open(test_loss_path,'w') as fp:
-        fp.write('test loss:' + str(test_loss) + '\n')
-        fp.write('test accuracy:' + str(test_acc) + '\n')
 
 
-    path = os.path.join(modelPath, "result/test_loss_acc.pkl")
-    with open(path,'wb') as fp:
-        pickle.dump(test_loss,fp)
-        pickle.dump(test_acc,fp)
 
-    path = os.path.join(modelPath, "result/score_predict.pkl")
-    with open(path,'wb') as fp:
-        pickle.dump(dot_score,fp)
-        pickle.dump(bert_score,fp)
-
-    # visualize prediction sets for query X
-    #util.pyで実装する
-    # pred_pos1,pred_pos2,pred_pos3,pred_pos4,pred_pos5, accuracy=util.pieceacc_predpos(dot_score)
-    #--------------------------------------
-
-#---------------------------------
-else:
-    path = os.path.join(modelPath, "result/score_predict.pkl")
-    with open(path,'rb') as fp:
-        dot_score = pickle.load(fp)
-        bert_score = pickle.load(fp)
-    pdb.set_trace()
-    #作成途中 集合インデックスはy_test, アイテムインデックスが存在しないので作成必要
-    pred_pos1,pred_pos2,pred_pos3,pred_pos4,pred_pos5, accuracy=util.pieceacc_predpos(dot_score)
-#---------------------------------
-'''
