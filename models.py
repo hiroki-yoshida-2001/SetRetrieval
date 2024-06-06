@@ -394,6 +394,7 @@ class SMN(tf.keras.Model):
 
         #---------------------
         # add_embedding
+        pdb.set_trace()
         if self.seed_init == 0:
             y_pred = tf.tile(self.set_emb, [nSet,1,1]) # (nSet, nItemMax, D)
         else:
@@ -553,137 +554,7 @@ class SMN(tf.keras.Model):
         y_pred = tf.concat([y_pred_pos,y_pred_neg],axis=0)
 
         return y_true, y_pred
-    # compute item wise similarity between pred Item and gallery and select item(in predict step)
-    def item_selection(self, x, ID):
-        x, y = x # x, y : (nSet_x(y), nItemMax, dim)
-        category1, category2, item_label, set_label, y_true = ID
-        nSet_x = tf.shape(x)[0]
-        nSet_y = tf.shape(y)[0]
-        nItemMax_y = tf.shape(y)[1]
-        
 
-        cos_sim = tf.stack(
-        [[                
-            tf.matmul(tf.nn.l2_normalize(y[j], axis=-1),tf.transpose(tf.nn.l2_normalize(x[i], axis=-1),[1,0]))
-            for i in range(nSet_x)] for j in range(nSet_y)]
-        )
-        indexs_per_set = []
-        indexs_per_set_rmbyc1 = []
-        scores_per_set = []
-        scores_per_set_rmbyc1 = []
-        indexs = []
-        scores = []
-        indexs_rmbyc1 =[]
-        scores_rmbyc1 = []
-        ranks = []
-        
-        def find_ranks(array, targets):
-            
-            sorted_indices = tf.argsort(array,direction='DESCENDING')
-            sorted_array = tf.gather(array, sorted_indices)
-
-            ranks = []
-            for target in targets:
-                if target == 0:
-                    ranks.append(-1)
-                else:
-                    rank = tf.where(tf.equal(sorted_array, target))
-                    if len(rank) > 0:
-                        ranks.append(rank[0][0].numpy() + 1)  # インデックスを1ベースに変換し、最も低いランクを追加
-                    else:
-                        ranks.append(-1)  # 要素が見つからない場合は-1を追加
-
-            return ranks
-        
-        # tf.math.top_kで返ってくるindexをどうやってcategory1, category2, item_labelにつなげるかは未解決
-        for batch_ind in range(len(cos_sim)):
-            # クエリと異なるcategory1を持つアイテムのみを抽出
-            search_indices = tf.where((category1 != category1[batch_ind][0]) & (category1 != category1[batch_ind][1]) & (category1!= category1[batch_ind][2]) & (category1!= category1[batch_ind][3]) & (category1!= category1[batch_ind][4]))
-            rank = []
-            for item_ind in range(nItemMax_y):
-                score, index = tf.math.top_k(tf.reshape(cos_sim[batch_ind][:,item_ind,:], cos_sim[batch_ind][:,item_ind,:].shape[0]*cos_sim[batch_ind][:,item_ind,:].shape[1]),k=2)
-                indexs_per_set.append(index)
-                scores_per_set.append(score)
-                
-                target_score = tf.gather_nd(cos_sim[batch_ind][:,item_ind,:], tf.where(tf.equal(y_true[batch_ind], 1))).numpy()[0].tolist()
-                rank.append(find_ranks(tf.reshape(cos_sim[batch_ind][:,item_ind,:], cos_sim[batch_ind][:,item_ind,:].shape[0]*cos_sim[batch_ind][:,item_ind,:].shape[1]), target_score))
-                # クエリと同じcategory1アイテムとの類似度を-infに設定
-                
-                mask = tf.zeros_like(cos_sim[batch_ind][:,item_ind,:], dtype=tf.bool)
-                mask = tf.tensor_scatter_nd_update(mask, search_indices, tf.ones(tf.shape(search_indices)[0], dtype=tf.bool))
-                cos_sim_rmbyc1 = tf.where(mask, cos_sim[batch_ind][:,item_ind,:], tf.fill(tf.shape(cos_sim[batch_ind][:,item_ind,:]), float('-inf')))
-                #cos_sim_rmbyc1 = tf.tensor_scatter_nd_update(cos_sim[batch_ind][:,item_ind,:], search_indices, tf.fill(tf.shape(search_indices)[0], float('-inf')))
-                score, index = tf.math.top_k(tf.reshape(cos_sim_rmbyc1, cos_sim_rmbyc1.shape[0]*cos_sim_rmbyc1.shape[1]),k=2)
-                indexs_per_set_rmbyc1.append(index)
-                scores_per_set_rmbyc1.append(score)
-
-            ranks.append(rank)
-            scores.append(scores_per_set)
-            indexs.append(indexs_per_set)
-            scores_rmbyc1.append(scores_per_set_rmbyc1)
-            indexs_rmbyc1.append(indexs_per_set_rmbyc1)
-            scores_per_set = []
-            indexs_per_set = []
-            indexs_per_set_rmbyc1 = []
-            scores_per_set_rmbyc1 = []
-            
-        
-        
-        # indexをcategory1, 2 item_labelに紐づける処理
-        search_results = np.zeros([len(indexs_rmbyc1),len(indexs_rmbyc1[0])])
-        indexs_rmbyc1_for_search = []
-        indexs_rmbyc1_for_set = []
-        pred_id_data = []
-        pred_id_data_batch = []
-        pred_category2 = []
-        pred_category2_batch = []
-        for batch_ind in range(len(indexs_rmbyc1)):
-            for item_ind in range(len(indexs_rmbyc1[batch_ind])):
-                
-                pred_indices = tf.transpose(tf.unravel_index(indexs_rmbyc1[batch_ind][item_ind], cos_sim_rmbyc1.shape))
-                pred_set_label = tf.gather(set_label, pred_indices[:,0])
-                pred_set_label = tf.cast(pred_set_label, tf.int64)
-                pred_item_label = tf.gather_nd(item_label, pred_indices)
-                pred_category2.append(tf.gather_nd(category2, pred_indices))
-                indexs_rmbyc1_for_search.append(tf.transpose(tf.unravel_index(indexs_rmbyc1[batch_ind][item_ind], cos_sim_rmbyc1.shape)))
-                pred_id_data.append(tf.stack([pred_set_label, pred_item_label],axis=1))
-            indexs_rmbyc1_for_set.append(indexs_rmbyc1_for_search)
-            pred_id_data_batch.append(pred_id_data)
-            pred_category2_batch.append(pred_category2)
-            indexs_rmbyc1_for_search = []
-            pred_id_data = []
-            pred_category2 = []
-        
-        preder = tf.stack(pred_category2_batch)
-        preder = preder[:,:,0]
-        def compute_accuracy(A_batch, search_array_batch):
-            batch_size = A_batch.shape[0]
-            accuracy_sum = 0.0
-            
-            for i in range(batch_size):
-                A = A_batch[i]
-                search_array = search_array_batch[i]
-                
-                # 0以外の要素を取得
-                nonzero_elements = tf.boolean_mask(A, tf.not_equal(A, 0))
-                
-                # 各要素がsearch_arrayに含まれているかどうかを検索
-                presence = tf.reduce_any(tf.equal(tf.expand_dims(nonzero_elements, axis=1), search_array), axis=1)
-                
-                # 正答率を計算し、合計に加算
-                accuracy_sum += tf.reduce_mean(tf.cast(presence, tf.float32))
-            
-            # バッチ平均の正答率を計算
-            accuracy = accuracy_sum / batch_size
-            return accuracy.numpy()
-        category_acc = compute_accuracy(category2, preder)
-        
-        # -----------------------------------------
-        # caluclate top2 item between gallery (but index is reshaped tensor)
-        # for query index = 0 item pred (first category) to gallery is cos_sim[0][:,0,:]  
-        # score, index = tf.math.top_k(tf.reshape(cos_sim[batch_ind][:,item_ind,:], cos_sim[batch_ind][:,item_ind,:].shape[0]*cos_sim[batch_ind][:,item_ind,:].shape[1]),k=2)
-        
-        return cos_sim, category_acc, tf.stack(pred_id_data_batch), tf.stack(pred_category2_batch), tf.stack(ranks)
     # train step
     def train_step(self,data):
 
