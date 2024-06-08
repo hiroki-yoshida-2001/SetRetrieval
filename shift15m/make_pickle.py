@@ -176,7 +176,7 @@ def main(args):
     
     category2_pickle_path = glob.glob(f"{train_path}/category_id2/*.pkl")
 
-    if not os.path.exists(category2_pickle_path):
+    if not category2_pickle_path:
         print("error: item feature pickle file divided by category_id2 does not exist")
         sys.exit()
     if not os.path.exists(item_seed_output):
