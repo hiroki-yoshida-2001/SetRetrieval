@@ -74,8 +74,8 @@ class cross_set_score(tf.keras.layers.Layer):
         # multi-head linear function, l(x|W_0), l(x|W_1)...l(x|W_num_heads) for each item feature vector x.
         # one big linear function with weights of W_0, W_1, ..., W_num_heads outputs head_size*num_heads-dim vector
         #self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,kernel_constraint=tf.keras.constraints.NonNeg(),use_bias=False)
-        self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,use_bias=False)
-        self.linear2 = tf.keras.layers.Dense(1,use_bias=False)
+        self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,use_bias=False,name='CS_cnn')
+        self.linear2 = tf.keras.layers.Dense(1,use_bias=False, name='CS_cnn')
 
     def call(self, x, nItem):
         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
@@ -204,6 +204,64 @@ class set_attention(tf.keras.layers.Layer):
 
         return output
 #----------------------------
+# Linear Projection (SHIFT15M => head_size) 
+class MLP(tf.keras.Model):
+    def __init__(self, baseChn=1024, category_class_num=41):
+        super(MLP, self).__init__()
+        self.fc1 = tf.keras.layers.Dense(baseChn, activation=tfa.activations.gelu, use_bias=False)
+        self.fc2 = tf.keras.layers.Dense(baseChn//2, activation=tfa.activations.gelu, use_bias=False)
+        self.fc3 = tf.keras.layers.Dense(baseChn//4, activation=tfa.activations.gelu, use_bias=False)
+        self.fc4 = tf.keras.layers.Dense(category_class_num, activation='softmax', use_bias=False)
+
+    def call(self, x):
+        x = self.fc1(x)
+        x = self.fc2(x)
+        x = self.fc3(x)
+        output = self.fc4(x)
+
+        return x, output
+    
+    def train_step(self, data):
+        
+        x, y, class_weights = data
+
+        sample_weights = tf.gather(class_weights, tf.cast(y, tf.int32))
+
+        with tf.GradientTape() as tape:
+            _, y_pred = self(x, training=True)
+            loss = self.compiled_loss(y, y_pred, regularization_losses=self.losses)
+     
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+
+        self.optimizer.apply_gradients(
+            (grad, var)
+            for (grad, var) in zip(gradients, trainable_vars)
+            if grad is not None)
+
+        # update metrics
+        self.compiled_metrics.update_state(y, y_pred)
+
+        # return metrics as dictionary
+        return {m.name: m.result() for m in self.metrics}
+
+    # test step
+    def test_step(self, data):
+
+        x, y = data
+    
+        # predict
+        _, y_pred = self(x, training=False)
+        
+        # loss
+        self.compiled_loss(y, y_pred, regularization_losses=self.losses)
+
+        # update metrics
+        self.compiled_metrics.update_state(y, y_pred)
+
+        # return metrics as dictionary
+        return {m.name: m.result() for m in self.metrics}
+#----------------------------
 
 #----------------------------
 # CNN
@@ -288,7 +346,7 @@ class CNN(tf.keras.Model):
 #----------------------------
 # set matching network
 class SMN(tf.keras.Model):
-    def __init__(self, isCNN=True, is_set_norm=False, is_cross_norm=True, is_final_linear=True, num_layers=1, num_heads=2, mode='setRepVec_pivot', calc_set_sim='BERTscore', baseChn=32, rep_vec_num=1, seed_init = 0, cnn_class_num=2, max_channel_ratio=2, is_neg_down_sample=False, is_Cvec_linear=False):
+    def __init__(self, isCNN=True, is_set_norm=False, is_cross_norm=True, is_TrainableMLP=True, num_layers=1, num_heads=2, mode='setRepVec_pivot', calc_set_sim='BERTscore', baseChn=32, baseMlp = 512, rep_vec_num=1, seed_init = 0, cnn_class_num=2, max_channel_ratio=2, is_neg_down_sample=False, use_Cvec=True, is_Cvec_linear=False):
         super(SMN, self).__init__()
         self.isCNN = isCNN
         self.num_layers = num_layers
@@ -297,8 +355,10 @@ class SMN(tf.keras.Model):
         self.rep_vec_num = rep_vec_num
         self.seed_init = seed_init
         self.baseChn = baseChn
-        self.is_final_linear = is_final_linear
+        self.isTrainableMLP = is_TrainableMLP
+        self.baseMlpChn = baseMlp
         self.is_neg_down_sample = is_neg_down_sample
+        self.use_Cvec = use_Cvec
         self.is_Cvec_linear = is_Cvec_linear
         
         if self.seed_init != 0:
@@ -310,7 +370,7 @@ class SMN(tf.keras.Model):
         self.fc_cnn_proj = tf.keras.layers.Dense(baseChn*max_channel_ratio, activation=tfa.activations.gelu, use_bias=False, name='setmatching_cnn')
         #---------------------
         # projection layer for pred
-        self.fc_pred_proj = tf.keras.layers.Dense(baseChn*max_channel_ratio, activation=tfa.activations.gelu, use_bias=False, name='setmatching') # nameにcnn
+        self.fc_pred_proj = tf.keras.layers.Dense(baseChn*max_channel_ratio, activation=tfa.activations.gelu, use_bias=False, name='setmatching_cnn') # nameにcnn
         #---------------------
         # encoder for query X
         self.set_emb = self.add_weight(name='set_emb',shape=(1,self.rep_vec_num,baseChn*max_channel_ratio),trainable=True)
@@ -347,6 +407,11 @@ class SMN(tf.keras.Model):
             # 4096 => 64次元への写像処理が必要
             self.set_emb = [self.add_weight(name='set_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[i]),trainable=True) for i in range(len(self.seed_init))]
         #---------------------
+        # MLP models
+        self.fc1 = tf.keras.layers.Dense(baseMlp, activation=tfa.activations.gelu, use_bias=False, name='setmatching_cnn')
+        self.fc2 = tf.keras.layers.Dense(baseMlp//2, activation=tfa.activations.gelu, use_bias=False, name='setmatching_cnn')
+        self.fc3 = tf.keras.layers.Dense(baseMlp//4, activation=tfa.activations.gelu, use_bias=False, name='setmatching_cnn')
+        self.fc4 = tf.keras.layers.Dense(len(seed_init), activation='softmax', use_bias=False, name='setmatching_cnn')
 
     def custom_initializer(self, initial_values):
         def initializer(shape, dtype=None):
@@ -366,7 +431,13 @@ class SMN(tf.keras.Model):
         if self.isCNN:
             x, predCNN = self.CNN((x,x_size),training=False)
         else:
-            x = self.fc_cnn_proj(x) # input: (nSet, nItemMax, D=4096) output:(nSet, nItemMax, D=64(baseChn*max_channel_ratio))
+            if self.isTrainableMLP:
+                x = self.fc1(x)
+                x = self.fc2(x)
+                x = self.fc3(x)
+
+            else:
+                x = self.fc_cnn_proj(x) # input: (nSet, nItemMax, D=4096) output:(nSet, nItemMax, D=64(baseChn*max_channel_ratio))
             predCNN = []
         
         debug['x_encoder_layer_0'] = x
@@ -393,43 +464,54 @@ class SMN(tf.keras.Model):
         #---------------------
 
         #---------------------
-        # add_embedding
-        pdb.set_trace()
-        if self.seed_init == 0:
-            y_pred = tf.tile(self.set_emb, [nSet,1,1]) # (nSet, nItemMax, D)
-        else:
-            y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
-            if self.is_Cvec_linear:
-                y_pred = self.fc_pred_proj(y_pred) # y_pred = self.fc_cnn_proj(y_pred) # y_pred = self.fc_pred_proj(y_pred)
+        if self.use_Cvec:
+            if self.isTrainableMLP:
+                if self.seed_init == 0:
+                    y_pred = tf.tile(self.set_emb, [nSet, 1,1])
+                else:
+                    y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
+                    y_pred = self.fc1(y_pred)
+                    y_pred = self.fc2(y_pred)
+                    y_pred = self.fc3(y_pred)
+                    
             else:
-                y_pred = self.fc_cnn_proj(y_pred)
-        y_pred_size = tf.constant(np.full(nSet,self.rep_vec_num).astype(np.float32))
+                # add_embedding
+                if self.seed_init == 0:
+                    y_pred = tf.tile(self.set_emb, [nSet,1,1]) # (nSet, nItemMax, D)
+                else:
+                    y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
+                    if self.is_Cvec_linear:
+                        y_pred = self.fc_pred_proj(y_pred) # y_pred = self.fc_cnn_proj(y_pred) # y_pred = self.fc_pred_proj(y_pred)
+                    else:
+                        y_pred = self.fc_cnn_proj(y_pred)
+            y_pred_size = tf.constant(np.full(nSet,self.rep_vec_num).astype(np.float32))
 
-        #---------------------
-        # decoder (cross-attention)
-        debug[f'x_decoder_layer_0'] = x
-        for i in range(self.num_layers):
-     
-            if self.mode == 'setRepVec_pivot': # Bi-PMA + pivot-cross
-                self.cross_attentions[i].pivot_cross = True
+            #---------------------
+            # decoder (cross-attention)
+            debug[f'x_decoder_layer_0'] = x
+            for i in range(self.num_layers):
+        
+                if self.mode == 'setRepVec_pivot': # Bi-PMA + pivot-cross
+                    self.cross_attentions[i].pivot_cross = True
 
-            query = self.layer_norms_decq[i](y_pred,y_pred_size)
-            key = self.layer_norms_deck[i](x,x_size)
+                query = self.layer_norms_decq[i](y_pred,y_pred_size)
+                key = self.layer_norms_deck[i](x,x_size)
 
-            # input: (nSet, nItemMax, D), output:(nSet, nItemMax, D)
-            query = self.cross_attentions[i](query,key)
-            y_pred += query
-    
-            query = self.layer_norms_dec2[i](y_pred,y_pred_size)
-            
+                # input: (nSet, nItemMax, D), output:(nSet, nItemMax, D)
+                query = self.cross_attentions[i](query,key)
+                y_pred += query
+        
+                query = self.layer_norms_dec2[i](y_pred,y_pred_size)
+                
 
-            query = self.fcs_dec[i](query)
-            y_pred += query
+                query = self.fcs_dec[i](query)
+                y_pred += query
 
-            debug[f'x_decoder_layer_{i+1}'] = x
-        x_dec = x
-        #---------------------
-
+                debug[f'x_decoder_layer_{i+1}'] = x
+            x_dec = x
+            #---------------------
+        else: # text generation methods (only query X )
+            y_pred = x
         #---------------------
         
 
@@ -554,10 +636,57 @@ class SMN(tf.keras.Model):
         y_pred = tf.concat([y_pred_pos,y_pred_neg],axis=0)
 
         return y_true, y_pred
+    # compute item wise similarity between pred Item and gallery and select item(in predict step)
+    def item_selection(self, x, ID):
+        x, y = x # x, y : (nSet_x(y), nItemMax, dim)
+        category1, category2, item_label, set_label, y_true = ID
+        nSet_x = tf.shape(x)[0]
+        nSet_y = tf.shape(y)[0]
+        nItemMax_y = tf.shape(y)[1]
+        
 
+        cos_sim = tf.stack(
+        [[                
+            tf.matmul(tf.nn.l2_normalize(y[j], axis=-1),tf.transpose(tf.nn.l2_normalize(x[i], axis=-1),[1,0]))
+            for i in range(nSet_x)] for j in range(nSet_y)]
+        )
+        
+        # category2 label wise methods
+        expected_category2 = tf.constant([10001, 10002, 10003, 10004, 10005, 11001, 11002, 11003, 11004, 11005, 11006, 11007, 11008
+                              , 12001, 12002, 12003, 12004, 12005, 13001, 13002, 13003, 13004, 13005
+                              , 14001, 14002, 14003, 14004, 14005, 14006, 14007, 15001, 15002, 15003, 15004, 15005, 15006, 15007
+                              , 16001, 16002, 16003, 16004])
+        pred_id_data_batch = []
+        pred_id_data = []
+        for batch_ind in range(len(cos_sim)):
+            for category2_ind in expected_category2:
+                indices = tf.where(category2 == category2_ind.numpy())
+                target_cos_sim = tf.stack([cos_sim[batch_ind][indices[i, 0], :, indices[i, 1]] for i in range(indices.shape[0])])
+                if len(target_cos_sim) == 0:
+                    target_cos_sim = 0
+                    pred_set_label = 0
+                    pred_item_label = 0
+                    pred_set_label = tf.cast(pred_set_label, tf.int64)
+                    pred_item_label = tf.cast(pred_item_label, tf.int64)
+                else:
+                    # 各ラベル毎の最近傍のID
+                    flattened = tf.reshape(target_cos_sim, target_cos_sim.shape[0]*target_cos_sim.shape[1])
+                    score, index = tf.math.top_k(flattened, k=1)
+                    tiled_set_label = tf.tile(set_label, [1, item_label.shape[-1]])
+                    pred_item_label = tf.gather_nd(item_label, indices[tf.unravel_index(index, target_cos_sim.shape)[0][0].numpy()])
+                    pred_set_label = tf.gather_nd(tiled_set_label, indices[tf.unravel_index(index, target_cos_sim.shape)[0][0].numpy()])
+                    pred_set_label = tf.cast(pred_set_label, tf.int64)
+
+
+                pred_id_data.append(tf.stack([pred_set_label, pred_item_label],axis=0))
+            pred_id_data_batch.append(pred_id_data)
+            pred_id_data = []
+
+        
+        return cos_sim, 0, tf.stack(pred_id_data_batch), [], []
     # train step
     def train_step(self,data):
-
+    
         # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
         x, y_true = data
         # x : (nSet, nItemMax, dim) , x_size : (nSet, )
@@ -566,7 +695,12 @@ class SMN(tf.keras.Model):
         # gallery : (nSet, nItemMax, dim)
         gallery = x
         # gallery linear projection(dimmension reduction) 
-        gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
+        if self.isTrainableMLP:
+            gallery = self.fc1(gallery)
+            gallery = self.fc2(gallery)
+            gallery = self.fc3(gallery)
+        else:
+            gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
 
         with tf.GradientTape() as tape:
             # predict
@@ -625,7 +759,12 @@ class SMN(tf.keras.Model):
         gallery = x 
 
         # gallery linear projection(dimmension reduction) 
-        gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
+        if self.isTrainableMLP:
+            gallery = self.fc1(gallery)
+            gallery = self.fc2(gallery)
+            gallery = self.fc3(gallery)
+        else:
+            gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
 
         # predict
         # predSMN : (nSet, nItemMax, d)
@@ -663,13 +802,18 @@ class SMN(tf.keras.Model):
     def predict_step(self,data):
         
         batch_data = data[0]
-
         # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
         x, x_size, category1, category2, item_label, y_test = batch_data
         # gallery : (nSet, nItemMax, dim)
         gallery = x
         # gallery linear projection(dimmension reduction) 
-        gallery = self.fc_cnn_proj(gallery)
+        if self.isTrainableMLP:
+            gallery = self.fc1(gallery)
+            gallery = self.fc2(gallery)
+            gallery = self.fc3(gallery)
+        else:
+            gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
+
         # predict
         # predSMN : (nSet, nItemMax, d)
         predCNN, predSMN, debug = self((x, x_size), training=False)
@@ -681,7 +825,7 @@ class SMN(tf.keras.Model):
         # compute similairty with gallery and f1_bert_score
         y_true = self.cross_set_label(y_test)
         y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
-        cos_sim, category_acc, result_id, result_category2, ranks = self.item_selection((gallery, predSMN),(category1, category2, item_label, y_test, y_true))
+        cos_sim, category_acc, result_id, result_category2, ranks = self.item_selection((gallery, predSMN),(category1, category2, item_label, replicated_set_label, y_true))
 
         if self.calc_set_sim == 'CS':
             set_score = self.cross_set_score((gallery, predSMN), x_size)
@@ -691,5 +835,7 @@ class SMN(tf.keras.Model):
             print("指定された集合間類似度を測る関数は存在しません")
             sys.exit()
         
-        return predSMN, set_score, category_acc, query_id, result_id, result_category2, ranks
+        
+        # return predSMN, set_score, category_acc, query_id, result_id, result_category2, ranks
+        return predSMN, set_score, query_id, result_id
 #----------------------------

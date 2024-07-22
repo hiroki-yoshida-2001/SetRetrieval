@@ -34,8 +34,10 @@ def parser_run():
     parser.add_argument('-is_cross_norm', type=int, default=1, help='switch of cross-normalization (1:on, 0:off), default=1')
     parser.add_argument('-trial', type=int, default=1, help='index of trial, default=1')
     parser.add_argument('-calc_set_sim', type=int, default=0, help='how to evaluate set similarity, CS:0, BERTscore:1, default=0')
-    parser.add_argument('-use_Cvec', type=bool, default=True, help='Whether use Cvec')
-    parser.add_argument('-is_Cvec_linear', type=bool, default=False, help='Whether learn FC_projection for Cluster seed vec')
+    parser.add_argument('-use_Cvec', type=int, default=1, help='Whether use Cvec')
+    parser.add_argument('-is_Cvec_linear', type=int, default=1, help='Whether divide FC_projection for Cluster seed vec and query')
+    parser.add_argument('-pretrained_mlp', type=int, default=1, help='Whether pretrain MLP (not use FC_projection)')
+    parser.add_argument('-mlp_projection_dim', type=int, default=128, help='MLP will be learned to achieve designated dimention')
 
     return parser
 #----------------------------
@@ -102,8 +104,13 @@ def plotLossACC(path,loss,val_loss,acc,val_acc):
     plt.ylabel('loss')
     plt.ylim(0,3)
     plt.legend()
-
+    
+    result_path = os.path.join(path,"result")
     path = os.path.join(path,"result/loss_acc.png")
+
+    
+    if not os.path.exists(result_path):
+        os.makedirs(result_path)
     plt.savefig(path)
 #----------------------------
 
@@ -215,3 +222,58 @@ def Set_accuracy(score:tf.Tensor, y_true:tf.Tensor):
     return accuracy
 
 #----------------------------
+
+# compute item wise similarity between pred Item and gallery and select item(in predict step)
+def item_selection(x, ID):
+    x, y = x # x, y : (nSet_x(y), nItemMax, dim)
+    category2, item_label, set_label = ID
+    nSet_x = tf.shape(x)[0]
+    nSet_y = tf.shape(y)[0]
+    nItemMax_y = tf.shape(y)[1]
+    
+    x_norm = x / np.linalg.norm(x, axis=-1, keepdims=True)
+    y_norm = y / np.linalg.norm(y, axis=-1, keepdims=True)
+    
+    # コサイン類似度の計算
+    cos_sim = np.stack(
+        [
+            [
+                np.dot(y_norm[j], x_norm[i].T)
+                for i in range(len(x))
+            ]
+            for j in range(len(y))
+        ]
+    )
+    
+    # category2 label wise methods
+    expected_category2 = tf.constant([10001, 10002, 10003, 10004, 10005, 11001, 11002, 11003, 11004, 11005, 11006, 11007, 11008
+                        , 12001, 12002, 12003, 12004, 12005, 13001, 13002, 13003, 13004, 13005
+                        , 14001, 14002, 14003, 14004, 14005, 14006, 14007, 15001, 15002, 15003, 15004, 15005, 15006, 15007
+                        , 16001, 16002, 16003, 16004])
+    pred_id_data_batch = []
+    pred_id_data = []
+    for batch_ind in range(len(cos_sim)):
+        for category2_ind in expected_category2:
+            indices = tf.where(category2 == category2_ind.numpy())
+            target_cos_sim = tf.stack([cos_sim[batch_ind][indices[i, 0], :, indices[i, 1]] for i in range(indices.shape[0])])
+            if len(target_cos_sim) == 0:
+                target_cos_sim = 0
+                pred_set_label = 0
+                pred_item_label = 0
+                pred_set_label = tf.cast(pred_set_label, tf.int64)
+                pred_item_label = tf.cast(pred_item_label, tf.int64)
+            else:
+                # 各ラベル毎の最近傍のIDさえ返せればいいです
+                flattened = tf.reshape(target_cos_sim, target_cos_sim.shape[0]*target_cos_sim.shape[1])
+                score, index = tf.math.top_k(flattened, k=1)
+                tiled_set_label = tf.tile(set_label, [1, item_label.shape[-1]])
+                pred_item_label = tf.gather_nd(item_label, indices[tf.unravel_index(index, target_cos_sim.shape)[0][0].numpy()])
+                pred_set_label = tf.gather_nd(tiled_set_label, indices[tf.unravel_index(index, target_cos_sim.shape)[0][0].numpy()])
+                pred_set_label = tf.cast(pred_set_label, tf.int64)
+
+
+            pred_id_data.append(tf.stack([pred_set_label, pred_item_label],axis=0))
+        pred_id_data_batch.append(pred_id_data)
+        pred_id_data = []
+
+    return tf.stack(pred_id_data_batch)

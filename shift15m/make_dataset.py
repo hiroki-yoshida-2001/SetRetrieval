@@ -8,16 +8,21 @@ import sys
 
 #-------------------------------
 class trainDataGenerator(tf.keras.utils.Sequence):
-    def __init__(self, year=2017, split=0, batch_size=20, max_item_num=5, max_data=np.inf):
+    def __init__(self, year=2017, split=0, batch_size=20, max_item_num=5, max_data=np.inf, mlp_flag=False):
         data_path =  "/data2/yoshida/mastermatching/data/forpack/pickles/2017-2017-split0" #f"pickle_data/{year}-{year}-split{split}"
         self.max_item_num = max_item_num
         self.batch_size = batch_size
+        self.isMLP = mlp_flag
         
         # load train data
         #pdb.set_trace()
         with open(f'{data_path}/train.pkl', 'rb') as fp:
             self.x_train = pickle.load(fp)
             self.y_train = pickle.load(fp)
+
+            self.category1_train = pickle.load(fp)
+            self.category2_train = pickle.load(fp)
+            self.item_label_train = pickle.load(fp)
 
         self.train_num = len(self.x_train)
 
@@ -30,6 +35,9 @@ class trainDataGenerator(tf.keras.utils.Sequence):
             self.x_valid = pickle.load(fp)
             self.y_valid = pickle.load(fp)
 
+            self.category1_valid = pickle.load(fp)
+            self.category2_valid = pickle.load(fp)
+            self.item_label_valid = pickle.load(fp)
         self.valid_num = len(self.x_valid)  
 
         # load test data
@@ -49,11 +57,43 @@ class trainDataGenerator(tf.keras.utils.Sequence):
         self.inds = np.arange(len(self.x_train))
         self.inds_shuffle = np.random.permutation(self.inds)
 
-    def __getitem__(self, index):
-        x, x_size, y = self.data_generation(self.x_train, self.y_train, self.inds_shuffle, index)
-        return (x, x_size), y
+        # data for pretrain task
+        self.x_pretrain = np.concatenate(self.x_train, axis=0)
+        self.y_pretrain = np.concatenate(self.category2_train, axis=0)
 
-    def data_generation(self, x, y, inds, index, category_1=0, category_2=0, item_label=0,):
+        # label encoding (only for train data) generatorで毎回呼ぶと時間がかかるため
+        unique_labels, counts = np.unique(self.y_pretrain, return_counts=True)
+        self.label_to_index = {label: index for index, label in enumerate(unique_labels)}
+
+        self.y_pretrain = np.array([self.label_to_index[label] for label in self.y_pretrain])
+        self.inds_pr = np.arange(len(self.y_pretrain))
+        self.inds_pr_shuffle = np.random.permutation(self.inds_pr)
+
+
+        
+
+
+    def __getitem__(self, index):
+        if self.isMLP: 
+            x, y = self.pretrain_data_generation(self.x_pretrain, self.y_pretrain, self.inds_pr_shuffle, index)
+            return x, y
+        else: #集合としてのバッチ学習
+            x, x_size, y = self.data_generation(self.x_train, self.y_train, self.inds_shuffle, index)
+            return (x, x_size), y
+    
+    def pretrain_data_generation(self, x, y, inds, index):
+
+        if index >= 0:
+            start_idx = index * self.batch_size
+            end_idx = min((index + 1) * self.batch_size, len(y))
+            excerpt = inds[start_idx:end_idx]
+
+            return x[excerpt], y[excerpt]
+        else:
+            y = np.array([self.label_to_index[label] for label in y])
+            return x, y
+
+    def data_generation(self, x, y, inds, index, category_1=0, category_2=0, item_label=0):
         #pdb.set_trace()
         if index >= 0:
             # extract x and y
@@ -158,13 +198,19 @@ class trainDataGenerator(tf.keras.utils.Sequence):
         return x_batch, x_size_batch, y_batch
 
     def data_generation_val(self):
-        
-        x_valid, x_size_val, y_valid = self.data_generation(self.x_valid, self.y_valid, self.inds, -1)
-        return x_valid, x_size_val, y_valid
+        if self.isMLP:
+            x_valid, y_valid = self.pretrain_data_generation(np.concatenate(self.x_valid, axis=0), np.concatenate(self.category2_valid, axis=0), self.inds, -1)
+            return x_valid, y_valid
+        else:
+            x_valid, x_size_val, y_valid = self.data_generation(self.x_valid, self.y_valid, self.inds, -1)
+            return x_valid, x_size_val, y_valid
     def data_generation_train(self):
-        
-        x_train, x_size_train, y_train = self.data_generation(self.x_train, self.y_train, self.inds, -1)
-        return x_train, x_size_train, y_train
+        if self.isMLP:
+            x_train, y_train = self.pretrain_data_generation(np.concatenate(self.x_train, axis=0), np.concatenate(self.category2_train, axis=0), self.inds, -1)
+            return x_train, y_train
+        else:
+            x_train, x_size_train, y_train = self.data_generation(self.x_train, self.y_train, self.inds, -1)
+            return x_train, x_size_train, y_train
     
     def data_generation_test(self):
         
