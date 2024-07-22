@@ -941,24 +941,5 @@ class SMN(tf.keras.Model):
         query_id = tf.stack([replicated_set_label, item_label],axis=1)
         query_id = tf.transpose(query_id, [0,2,1])
 
-        '''set_label = tf.cast(y_test, tf.int64)
-        replicated_set_label = tf.tile(tf.expand_dims(set_label, axis=1), [1, len(x[0])])
-        query_id = tf.stack([replicated_set_label, item_label],axis=1)
-        query_id = tf.transpose(query_id, [0,2,1])
-        # compute similairty with gallery and f1_bert_score
-        y_true = self.cross_set_label(y_test)
-        y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
-        cos_sim, category_acc, result_id, result_category2, ranks = self.item_selection((gallery, predSMN),(category1, category2, item_label, replicated_set_label, y_true))
-
-        if self.calc_set_sim == 'CS':
-            set_score = self.cross_set_score((gallery, predSMN), x_size)
-        elif self.calc_set_sim == 'BERTscore':
-            set_score = self.BERT_set_score((gallery, predSMN), x_size)
-        else:
-            print("指定された集合間類似度を測る関数は存在しません")
-            sys.exit()'''
-        
-        # return predSMN, set_score, category_acc, query_id, result_id, result_category2, ranks
-        # return predSMN, set_score, query_id, result_id
         return predSMN, gallery, replicated_set_label, query_id
 #----------------------------
