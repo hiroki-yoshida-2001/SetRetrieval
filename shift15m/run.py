@@ -44,7 +44,7 @@ patience = 5
 # batch size
 batch_size = 50
 
-test_batch_size = 7700
+test_batch_size = 7702
 
 # number of representive vectors 5=>41
 rep_vec_num = 41
@@ -245,28 +245,17 @@ if not os.path.exists(path):
 
     model_smn.compile(optimizer='adam',loss=util.Set_hinge_loss,metrics=util.Set_accuracy,run_eagerly=True)
 
-    # test_pred_vec, test_set_score, test_category_acc, query_id, result_id, result_category2, test_ranks = model_smn.predict((x_test[:7700],x_size_test[:7700],category1_test[:7700], category2_test[:7700], item_label_test[:7700], y_test[:7700]),batch_size=batch_size, verbose=1)  
     #test_loss, test_acc = model_smn.evaluate((x_test,x_size_test),y_test,batch_size=batch_size,verbose=1) 
-    test_pred_vec, gallery, replicated_set_label, query_id = model_smn.predict((x_test[:7700],x_size_test[:7700], y_test[:7700], item_label_test[:7700]),batch_size=test_batch_size, verbose=1)
-    # test_pred_vec, test_set_score, query_id, result_id = model_smn.predict((x_test[:7700],x_size_test[:7700],category1_test[:7700], category2_test[:7700], item_label_test[:7700], y_test[:7700]),batch_size=test_batch_size, verbose=1)   
+    test_pred_vec, gallery, replicated_set_label, query_id = model_smn.predict((x_test,x_size_test, y_test, item_label_test),batch_size=len(x_test), verbose=1)
     
     with open(path,'wb') as fp:
         pickle.dump(test_pred_vec, fp)
         pickle.dump(gallery, fp)
-        pickle.dump(y_test[:7700], fp)
+        pickle.dump(y_test, fp)
         pickle.dump(replicated_set_label, fp)
         pickle.dump(query_id, fp)
-        pickle.dump(category2_test[:7700],fp)
-        pickle.dump(item_label_test[:7700], fp)
-else:
-    with open(path, 'rb') as fp:
-        test_pred_vec = pickle.load(fp)
-        gallery = pickle.load(fp)
-        y_test = pickle.load(fp)
-        replicated_set_label = pickle.load(fp)
-        query_id = pickle.load(fp)
-        category2_test = pickle.load(fp)
-        item_label_test = pickle.load(fp)
+        pickle.dump(category2_test,fp)
+        pickle.dump(item_label_test, fp)
 
 
 item_retrieval = True
@@ -292,7 +281,7 @@ if visualize:
     except IOError:
         font = ImageFont.load_default()
 
-    IQONPath = '/data2/yoshida/mastermatching/data/IQON/IQON3000'
+    IQONPath = "IQON_Path"
     os.chdir(IQONPath)
     for batch_ind in range(0, len(query_id), test_batch_size):
         predBatchPath = os.path.join(modelPath, f"visualize/test_batch_size_{test_batch_size}/batch_{batch_ind}")
@@ -370,7 +359,3 @@ if visualize:
                 # 連結した画像を保存
                 concatenated_image.save(f"{predBatchPath}/query_{query_ind}.jpg")
             images = []
-
-
-
-
