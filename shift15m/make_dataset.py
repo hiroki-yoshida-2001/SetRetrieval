@@ -242,3 +242,161 @@ class testDataGenerator(tf.keras.utils.Sequence):
             self.x_size = pickle.load(fp)
             self.y = pickle.load(fp)
 #-------------------------------
+
+
+# train_generator (written with tf.data)
+class DataGenerator:
+    def  __init__(self, year=2017, split=0, batch_size=20, max_item_num=5, max_data=np.inf, mlp_flag=False):
+        data_path =  "/data2/yoshida/mastermatching/data/forpack/pickles/2017-2017-split0" #f"pickle_data/{year}-{year}-split{split}"
+        self.max_item_num = max_item_num
+        self.batch_size = batch_size
+        self.isMLP = mlp_flag
+        
+        # load train data
+        #pdb.set_trace()
+        with open(f'{data_path}/train.pkl', 'rb') as fp:
+            self.x_train = pickle.load(fp)
+            self.y_train = pickle.load(fp)
+
+            self.category1_train = pickle.load(fp)
+            self.category2_train = pickle.load(fp)
+            self.item_label_train = pickle.load(fp)
+
+        self.train_num = len(self.x_train)
+
+        # limit data
+        if self.train_num > max_data:
+            self.train_num = max_data
+
+        # load validation data
+        with open(f'{data_path}/valid.pkl', 'rb') as fp:
+            self.x_valid = pickle.load(fp)
+            self.y_valid = pickle.load(fp)
+
+            self.category1_valid = pickle.load(fp)
+            self.category2_valid = pickle.load(fp)
+            self.item_label_valid = pickle.load(fp)
+        self.valid_num = len(self.x_valid)  
+
+        # load test data
+        with open(f'{data_path}/test.pkl', 'rb') as fp:
+            self.x_test = pickle.load(fp)
+            self.y_test = pickle.load(fp)
+
+            self.category1_test = pickle.load(fp)
+            self.category2_test = pickle.load(fp)
+            self.item_label_test = pickle.load(fp)
+        self.test_num = len(self.x_test)        
+
+        # width and height of image
+        self.dim = len(self.x_train[0][0])
+
+        # shuffle index
+        self.inds = np.arange(len(self.x_train))
+        self.inds_shuffle = np.random.permutation(self.inds)
+
+        self.inds_vr = np.arange(len(self.x_valid))
+
+        # data for pretrain task
+        self.x_pretrain = np.concatenate(self.x_train, axis=0)
+        self.y_pretrain = np.concatenate(self.category2_train, axis=0)
+
+        # label encoding (only for train data) generatorで毎回呼ぶと時間がかかるため
+        unique_labels, counts = np.unique(self.y_pretrain, return_counts=True)
+        self.label_to_index = {label: index for index, label in enumerate(unique_labels)}
+
+        self.y_pretrain = np.array([self.label_to_index[label] for label in self.y_pretrain])
+        self.inds_pr = np.arange(len(self.y_pretrain))
+        self.inds_pr_shuffle = np.random.permutation(self.inds_pr)
+
+    # def generator(self):
+    #     for i in range(0, len(self.x), self.batch_size):
+    #         x_batch = self.x[i:i + self.batch_size]
+    #         y_batch = self.y[i:i + self.batch_size]
+    #         yield x_batch, y_batch
+
+    def train_generator(self):
+        np.random.shuffle(self.inds)
+        for index in range(0, len(self.inds), self.batch_size):
+            start_ind = index
+            batch_inds = self.inds[start_ind:start_ind + self.batch_size]
+            x_tmp = [self.x_train[i] for i in batch_inds]
+            y_tmp = [self.y_train[i] for i in batch_inds]
+
+            # xとyをスプリットし、パディングを適用
+            x_batch = []
+            x_size_batch = []
+            y_batch = []
+            for ind in range(len(x_tmp)):
+                x_tmp_split = np.array_split(x_tmp[ind], 2)
+                x_tmp_split_pad = [
+                    np.pad(
+                        x[:self.max_item_num],  # xの長さがmax_item_numを超える場合は切り捨て
+                        ((0, max(0, self.max_item_num - len(x))), (0, 0)),  # パディングを適用
+                        mode='constant'
+                    ) for x in x_tmp_split
+                ]
+                x_batch.append(x_tmp_split_pad)
+
+                x_size_batch.append([min(len(split), self.max_item_num) for split in x_tmp_split])
+                y_batch.append(np.ones(2) * y_tmp[ind])
+            
+            x_batch = np.vstack(x_batch)
+            x_size_batch = np.hstack(x_size_batch)
+            y_batch = np.hstack(y_batch)
+
+            
+
+            yield (x_batch, x_size_batch), y_batch
+
+    def validation_generator(self):
+        
+        for index in range(0, len(self.inds_vr), self.batch_size):
+            start_ind = index
+            batch_inds = self.inds_vr[start_ind:start_ind + self.batch_size]
+            x_tmp = [self.x_valid[i] for i in batch_inds]
+            y_tmp = [self.y_valid[i] for i in batch_inds]
+
+            # xとyをスプリットし、パディングを適用
+            x_batch = []
+            x_size_batch = []
+            y_batch = []
+            for ind in range(len(x_tmp)):
+                x_tmp_split = np.array_split(x_tmp[ind], 2)
+                x_tmp_split_pad = [
+                    np.pad(
+                        x[:self.max_item_num],  # xの長さがmax_item_numを超える場合は切り捨て
+                        ((0, max(0, self.max_item_num - len(x))), (0, 0)),  # パディングを適用
+                        mode='constant'
+                    ) for x in x_tmp_split
+                ]
+                x_batch.append(x_tmp_split_pad)
+
+                x_size_batch.append([min(len(split), self.max_item_num) for split in x_tmp_split])
+                y_batch.append(np.ones(2) * y_tmp[ind])
+            
+            x_batch = np.vstack(x_batch)
+            x_size_batch = np.hstack(x_size_batch)
+            y_batch = np.hstack(y_batch)
+
+            
+
+            yield (x_batch, x_size_batch), y_batch
+
+    def get_train_dataset(self):
+        
+        return tf.data.Dataset.from_generator(
+            self.train_generator,
+             output_types=((tf.float64, tf.float32), tf.float64),
+             output_shapes=((tf.TensorShape([None, self.max_item_num, self.dim]), tf.TensorShape([None,])), tf.TensorShape([None,]))
+                
+        )
+    
+    def get_validation_dataset(self):
+        
+        return tf.data.Dataset.from_generator(
+            self.train_generator,
+             output_types=((tf.float64, tf.float32), tf.float64),
+             output_shapes=((tf.TensorShape([None, self.max_item_num, self.dim]), tf.TensorShape([None,])), tf.TensorShape([None,]))
+                
+        )
