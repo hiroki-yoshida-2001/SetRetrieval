@@ -9,7 +9,7 @@ import sys
 #-------------------------------
 class trainDataGenerator(tf.keras.utils.Sequence):
     def __init__(self, year=2017, split=0, batch_size=20, max_item_num=5, max_data=np.inf, mlp_flag=False):
-        data_path =  "/data2/yoshida/mastermatching/data/forpack/pickles/2017-2017-split0" #f"pickle_data/{year}-{year}-split{split}"
+        data_path =  "pickle file dir" #f"pickle_data/{year}-{year}-split{split}"
         self.max_item_num = max_item_num
         self.batch_size = batch_size
         self.isMLP = mlp_flag
@@ -247,7 +247,7 @@ class testDataGenerator(tf.keras.utils.Sequence):
 # train_generator (written with tf.data)
 class DataGenerator:
     def  __init__(self, year=2017, split=0, batch_size=20, max_item_num=5, max_data=np.inf, mlp_flag=False):
-        data_path =  "/data2/yoshida/mastermatching/data/forpack/pickles/2017-2017-split0" #f"pickle_data/{year}-{year}-split{split}"
+        data_path =  "pickle file dir" #f"pickle_data/{year}-{year}-split{split}"
         self.max_item_num = max_item_num
         self.batch_size = batch_size
         self.isMLP = mlp_flag
