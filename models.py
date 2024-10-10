@@ -3,7 +3,9 @@ import numpy as np
 import tensorflow_addons as tfa
 import pdb
 import sys
-
+import math
+import os
+import pickle
 #----------------------------
 # normalization
 class layer_normalization(tf.keras.layers.Layer):
@@ -118,7 +120,7 @@ class cross_set_score(tf.keras.layers.Layer):
             # transpose (nSet_x (nSet_y), nItemMax, num_heads, head_size) to (nSet_x (nSet_y), num_heads, nItemMax, head_size)
             x = tf.transpose(tf.reshape(x,[nSet_x, nItemMax_x, self.num_heads, self.head_size]),[0,2,1,3])
             y = tf.transpose(tf.reshape(y,[nSet_y, nItemMax_y, self.num_heads, self.head_size]),[0,2,1,3])
-
+            '''
             scores = tf.stack(
             [[
                 tf.reduce_sum(tf.reduce_sum(
@@ -126,6 +128,12 @@ class cross_set_score(tf.keras.layers.Layer):
                 , axis=1), axis=1)/nItem[i]/tf.cast(nItemMax_y, tf.float32)
                 for i in range(nSet_x)] for j in range(nSet_y)]
             )
+            '''
+            x_expand = tf.expand_dims(x, 1) # (nSet_x, 1, num_heads, nItemMax, head_size)
+            y_expand = tf.expand_dims(y, 0) # (1, nSet_y, num_heads, nItemMax, head_size)
+            scores = tf.keras.layers.LeakyReLU()(tf.einsum('aijkl,ibjml->abjkm', x_expand, y_expand)) / sqrt_head_size # (nSet_y, nSet_x, num_heads, nItemMax_x, nItemMax_y)
+            scores = tf.reduce_sum(tf.reduce_sum(scores, axis=3), axis=3) / tf.reshape(nItem, (1, -1, 1)) / tf.cast(nItemMax_y, tf.float32) # (nSet_y, nSet_x, num_heads)
+
              
         # linearly combine multi-head score maps (nSet_y, nSet_x, num_heads) to (nSet_y, nSet_x, 1)
         scores = self.linear2(scores)
@@ -206,17 +214,23 @@ class set_attention(tf.keras.layers.Layer):
 #----------------------------
 # Linear Projection (SHIFT15M => head_size) 
 class MLP(tf.keras.Model):
-    def __init__(self, baseChn=1024, category_class_num=41):
+    def __init__(self, baseChn=1024, category_class_num=41,dropout_rate=0.5):
         super(MLP, self).__init__()
         self.fc1 = tf.keras.layers.Dense(baseChn, activation=tfa.activations.gelu, use_bias=False)
+        self.dropout1 = tf.keras.layers.Dropout(0.3)
         self.fc2 = tf.keras.layers.Dense(baseChn//2, activation=tfa.activations.gelu, use_bias=False)
+        self.dropout2 = tf.keras.layers.Dropout(0.3)
         self.fc3 = tf.keras.layers.Dense(baseChn//4, activation=tfa.activations.gelu, use_bias=False)
+        self.dropout3 = tf.keras.layers.Dropout(0.3)
         self.fc4 = tf.keras.layers.Dense(category_class_num, activation='softmax', use_bias=False)
 
     def call(self, x):
         x = self.fc1(x)
+        x = self.dropout1(x)
         x = self.fc2(x)
+        x = self.dropout2(x)
         x = self.fc3(x)
+        x = self.dropout3(x)
         output = self.fc4(x)
 
         return x, output
@@ -342,24 +356,62 @@ class CNN(tf.keras.Model):
         # return metrics as dictionary
         return {m.name: m.result() for m in self.metrics}
 #----------------------------
+    
+class CustomMetric(tf.keras.metrics.Metric):
+    def __init__(self, name='custom_metric', **kwargs):
+        super(CustomMetric, self).__init__(name=name, **kwargs)
+        self.total = self.add_weight(name='total', initializer='zeros')  # 値の合計
+        self.count = self.add_weight(name='count', initializer='zeros')  # サンプル数
+
+    def update_state(self, y, metric_value, sample_weight=None):
+        """
+        metric_value: compute_custom_metricで計算されたメトリクスの値
+        sample_weight: 任意の重み（指定されない場合はNone）
+        """
+        # # metric_valueを累積する
+        # if not isinstance(metric_value, tf.Tensor):
+        #     metric_value = tf.cast(tf.constant(metric_value), tf.float32)
+        # else:
+        #     metric_value = tf.cast(metric_value, tf.float32)
+        batch_size = tf.shape(metric_value)[0]
+        mean_metric_value = tf.reduce_mean(metric_value)
+        # バッチごとの平均にバッチサイズを掛けて、加重平均を累積
+        self.total.assign_add(tf.cast(mean_metric_value * batch_size.numpy(), tf.float32))
+
+        # 全サンプル数を累積
+        self.count.assign_add(tf.cast(batch_size, tf.float32))
+        # self.total.assign_add(metric_value)
+        
+        # # サンプル数をカウント
+        # self.count.assign_add(tf.cast(tf.size(metric_value), tf.float32))
+
+    def result(self):
+        # 合計値をサンプル数で割って平均を返す
+        return self.total / self.count
+
+    def reset_state(self):
+        # 状態をリセット
+        self.total.assign(0)
+        self.count.assign(0)
 
 #----------------------------
 # set matching network
 class SMN(tf.keras.Model):
-    def __init__(self, isCNN=True, is_set_norm=False, is_cross_norm=True, is_TrainableMLP=True, num_layers=1, num_heads=2, mode='setRepVec_pivot', calc_set_sim='BERTscore', baseChn=32, baseMlp = 512, rep_vec_num=1, seed_init = 0, cnn_class_num=2, max_channel_ratio=2, is_neg_down_sample=False, use_Cvec=True, is_Cvec_linear=False):
+    def __init__(self, isCNN=True, is_set_norm=False, is_TrainableMLP=True, num_layers=1, num_heads=2, calc_set_sim='BERTscore', baseChn=32, baseMlp = 512, rep_vec_num=1, seed_init = 0, max_channel_ratio=2, use_Cvec=True, is_Cvec_linear=False, use_all_pred=False, is_category_emb=False, c1_label=True):
         super(SMN, self).__init__()
         self.isCNN = isCNN
         self.num_layers = num_layers
-        self.mode = mode
         self.calc_set_sim = calc_set_sim
         self.rep_vec_num = rep_vec_num
         self.seed_init = seed_init
         self.baseChn = baseChn
         self.isTrainableMLP = is_TrainableMLP
         self.baseMlpChn = baseMlp
-        self.is_neg_down_sample = is_neg_down_sample
         self.use_Cvec = use_Cvec
         self.is_Cvec_linear = is_Cvec_linear
+        self.use_all_pred = use_all_pred
+        self.is_category_emb = is_category_emb
+        self.is_c1label = c1_label
         
         if self.seed_init != 0:
             self.dim_shift15 = len(self.seed_init[0])
@@ -398,47 +450,82 @@ class SMN(tf.keras.Model):
         self.fc_final2 = tf.keras.layers.Dense(1, activation='sigmoid', name='setmatching')
         self.fc_proj = tf.keras.layers.Dense(1, use_bias=False, name='projection')  # linear projection
         #---------------------
-
+        self.c2toc1 = [[0,1,2,3,4],[5,6,7,8,9,10,11,12],[13,14,15,16,17],[18,19,20,21,22],[23,24,25,26,27,28,29],[30,31,32,33,34,35,36],[37,38,39,40]]
+        self.label_slice = False # if slice emb vector before input or loss calculation T : before slicing F : After slicing
+        self.cluster_moveable = False
+        self.key_cluster = True
         #---------------------
         # seed_vec initialization with cluster vectors
         if self.seed_init == 0:
             self.set_emb = self.add_weight(name='set_emb',shape=(1, self.rep_vec_num,baseChn*max_channel_ratio),trainable=True)
         else:
-            # 4096 => 64次元への写像処理が必要
-            self.set_emb = [self.add_weight(name='set_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[i]),trainable=True) for i in range(len(self.seed_init))]
+            if self.is_c1label:
+                if self.cluster_moveable:
+                    self.cluster_emb = [self.add_weight(name='set_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[i]),trainable=True) for i in range(len(self.seed_init))]
+                    self.set_emb = []
+                    for i in range(len(self.c2toc1)):
+                        added_vector = self.add_weight(name='set_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.cluster_emb[self.c2toc1[i][0] : self.c2toc1[i][-1]], c2toc1=True),trainable=True)
+                        self.set_emb.append(added_vector)
+                    self.cluster = [self.add_weight(name='set_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[i]),trainable=True) for i in range(len(self.seed_init))]
+                else:
+                    self.set_emb = []
+                    for i in range(len(self.c2toc1)):
+                        added_vector = self.add_weight(name='set_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[self.c2toc1[i][0] : self.c2toc1[i][-1]], c2toc1=True),trainable=True)
+                        self.set_emb.append(added_vector)
+                    self.cluster = [self.add_weight(name='set_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[i]),trainable=True) for i in range(len(self.seed_init))]
+            else:
+                # 4096 => 64次元への写像処理が必要
+                self.set_emb = [self.add_weight(name='set_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[i]),trainable=True) for i in range(len(self.seed_init))]
         #---------------------
         # MLP models
-        self.fc1 = tf.keras.layers.Dense(baseMlp, activation=tfa.activations.gelu, use_bias=False, name='setmatching_cnn')
-        self.fc2 = tf.keras.layers.Dense(baseMlp//2, activation=tfa.activations.gelu, use_bias=False, name='setmatching_cnn')
-        self.fc3 = tf.keras.layers.Dense(baseMlp//4, activation=tfa.activations.gelu, use_bias=False, name='setmatching_cnn')
-        self.fc4 = tf.keras.layers.Dense(len(seed_init), activation='softmax', use_bias=False, name='setmatching_cnn')
+        self.MLP = []
 
-    def custom_initializer(self, initial_values):
+        # category embedded vector
+        self.category_emb = [self.add_weight(name='category_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[i], category_emb=True),trainable=True) for i in range(len(self.seed_init))]
+
+        
+    def custom_initializer(self, initial_values, category_emb=False, c2toc1=False):
         def initializer(shape, dtype=None):
             # 次元ごとに異なる値を持つTensorを作成
-            values = [initial_values[i] for i in range(shape[0])]
+            if category_emb:
+                values = [1/100 * initial_values[i] for i in range(shape[0])]
+            else:
+                if not c2toc1:
+                    values = [initial_values[i] for i in range(shape[0])]
+                else:
+                    initial_values_np = np.array(initial_values)
+                    # 各次元ごとに平均を求める
+                    if self.cluster_moveable:
+                        values = np.sum(initial_values_np) / initial_values_np.shape
+                    else:
+                        values = np.mean(initial_values_np, axis=0)
             return tf.constant(values, dtype=dtype)
         return initializer
     
     def call(self, x):
-        x, x_size = x
+        if not self.use_all_pred:
+            x, x_size, c_label, c1_label, y_pred_size = x
+        else:
+            x, x_size = x
         debug = {}
         shape = tf.shape(x)
         nSet = shape[0]
         nItemMax = shape[1]
 
+        # category embeddeing
+        if self.is_category_emb and not self.use_all_pred:
+            x  += tf.gather(tf.stack(self.category_emb), c_label)
         # CNN
         if self.isCNN:
             x, predCNN = self.CNN((x,x_size),training=False)
         else:
             if self.isTrainableMLP:
-                x = self.fc1(x)
-                x = self.fc2(x)
-                x = self.fc3(x)
+                x, _ = self.MLP(x,training=False)
 
             else:
                 x = self.fc_cnn_proj(x) # input: (nSet, nItemMax, D=4096) output:(nSet, nItemMax, D=64(baseChn*max_channel_ratio))
             predCNN = []
+        
         
         debug['x_encoder_layer_0'] = x
 
@@ -464,55 +551,72 @@ class SMN(tf.keras.Model):
         #---------------------
 
         #---------------------
-        if self.use_Cvec:
-            if self.isTrainableMLP:
-                if self.seed_init == 0:
-                    y_pred = tf.tile(self.set_emb, [nSet, 1,1])
-                else:
-                    y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
-                    y_pred = self.fc1(y_pred)
-                    y_pred = self.fc2(y_pred)
-                    y_pred = self.fc3(y_pred)
-                    
+        if self.isTrainableMLP:
+            if self.seed_init == 0:
+                y_pred = tf.tile(self.set_emb, [nSet, 1,1])
             else:
-                # add_embedding
-                if self.seed_init == 0:
-                    y_pred = tf.tile(self.set_emb, [nSet,1,1]) # (nSet, nItemMax, D)
+                if not self.use_all_pred:
+                    if self.is_c1label: # 7 category ver
+                        if self.label_slice:
+                            y_pred = tf.gather(tf.stack(self.set_emb), c1_label)
+                            cluster = tf.tile(tf.expand_dims(tf.stack(self.cluster), axis=0),[nSet,1,1])
+                        else:
+                            y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
+                            cluster = tf.tile(tf.expand_dims(tf.stack(self.cluster), axis=0),[nSet,1,1])
+                    else: # 41category ver
+                        if self.label_slice:
+                            y_pred = tf.gather(tf.stack(self.set_emb), c_label)
+                        else:
+                            y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
                 else:
                     y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
-                    if self.is_Cvec_linear:
-                        y_pred = self.fc_pred_proj(y_pred) # y_pred = self.fc_cnn_proj(y_pred) # y_pred = self.fc_pred_proj(y_pred)
-                    else:
-                        y_pred = self.fc_cnn_proj(y_pred)
-            y_pred_size = tf.constant(np.full(nSet,self.rep_vec_num).astype(np.float32))
-
-            #---------------------
-            # decoder (cross-attention)
-            debug[f'x_decoder_layer_0'] = x
-            for i in range(self.num_layers):
-        
-                if self.mode == 'setRepVec_pivot': # Bi-PMA + pivot-cross
-                    self.cross_attentions[i].pivot_cross = True
-
-                query = self.layer_norms_decq[i](y_pred,y_pred_size)
-                key = self.layer_norms_deck[i](x,x_size)
-
-                # input: (nSet, nItemMax, D), output:(nSet, nItemMax, D)
-                query = self.cross_attentions[i](query,key)
-                y_pred += query
-        
-                query = self.layer_norms_dec2[i](y_pred,y_pred_size)
+                y_pred, _ = self.MLP(y_pred, training=False)
                 
-
-                query = self.fcs_dec[i](query)
-                y_pred += query
-
-                debug[f'x_decoder_layer_{i+1}'] = x
-            x_dec = x
-            #---------------------
-        else: # text generation methods (only query X )
-            y_pred = x
+                # cluster K, Q
+                cluster, _ = self.MLP(cluster, training=False)
+                
+        else:
+            # add_embedding
+            if self.seed_init == 0:
+                y_pred = tf.tile(self.set_emb, [nSet,1,1]) # (nSet, nItemMax, D)
+            else:
+                y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
+                if self.is_Cvec_linear:
+                    y_pred = self.fc_pred_proj(y_pred) # y_pred = self.fc_cnn_proj(y_pred) # y_pred = self.fc_pred_proj(y_pred)
+                else:
+                    y_pred = self.fc_cnn_proj(y_pred)
+        if self.use_all_pred:
+            y_pred_size = tf.constant(np.full(nSet,self.rep_vec_num).astype(np.float32))
+        elif not self.label_slice:
+            y_pred_size = tf.constant(np.full(nSet,len(self.c2toc1)).astype(np.float32))
+        
         #---------------------
+        # decoder (cross-attention)
+        debug[f'x_decoder_layer_0'] = x
+        for i in range(self.num_layers):
+    
+            self.cross_attentions[i].pivot_cross = True
+
+            query = self.layer_norms_decq[i](y_pred,y_pred_size)
+            # key = self.layer_norms_deck[i](x,x_size)
+
+            # cluster key, value
+            if self.key_cluster:
+                key = self.layer_norms_deck[i](tf.concat([x, cluster],axis=1), x_size+tf.constant(np.full(nSet,len(self.cluster)).astype(np.float32)))
+            else:
+                key = self.layer_norms_deck[i](x,x_size)
+            # input: (nSet, nItemMax, D), output:(nSet, nItemMax, D)
+            query = self.cross_attentions[i](query,key)
+            y_pred += query
+    
+            query = self.layer_norms_dec2[i](y_pred,y_pred_size)
+            
+
+            query = self.fcs_dec[i](query)
+            y_pred += query
+
+            debug[f'x_decoder_layer_{i+1}'] = x
+        x_dec = x
         
 
         return predCNN, y_pred, debug
@@ -570,28 +674,65 @@ class SMN(tf.keras.Model):
             nSet_y = tf.shape(y)[0]
             nItemMax_y = tf.shape(y)[1]
 
-            cos_sim = tf.stack(
-            [[                
-                tf.matmul(tf.nn.l2_normalize(y[j], axis=-1),tf.transpose(tf.nn.l2_normalize(x[i], axis=-1),[1,0]))
-                for i in range(nSet_x)] for j in range(nSet_y)]
-            )
-            f1_scores = [
-            
-                2 * (
-                    tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1) *
-                    tf.reduce_sum(tf.reduce_max(tf.where(tf.not_equal(cos_sim[i], 0), cos_sim[i], tf.fill(cos_sim[i].shape, float('-inf'))), axis=2), axis=1, keepdims=True) / tf.cast(nItemMax_y, tf.float32)
-                ) / (
-                    tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1) +
-                    tf.reduce_sum(tf.reduce_max(tf.where(tf.not_equal(cos_sim[i], 0), cos_sim[i], tf.fill(cos_sim[i].shape, float('-inf'))), axis=2), axis=1, keepdims=True) / tf.cast(nItemMax_y, tf.float32)
-                )
-                for i in range(len(cos_sim))
-            ]
-        
+            x_expand = tf.expand_dims(tf.nn.l2_normalize(x, axis=-1), 0) # (nSet_x, 1, nItemMax, head_size)
+            y_expand = tf.expand_dims(tf.nn.l2_normalize(y, axis=-1), 1) # (1, nSet_y, nItemMax, head_size)
+            cos_sim = tf.einsum('aijk,ibmk->abjm', y_expand, x_expand) # (nSet_y, nSet_x, nItemMax_x, nItemMax_y)
+            if self.use_all_pred:
+                f1_scores = [
+                
+                    2 * (
+                        tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1) * # precision
+                        tf.reduce_sum(tf.reduce_max(tf.where(tf.not_equal(cos_sim[i], 0), cos_sim[i], tf.fill(cos_sim[i].shape, float('-inf'))), axis=2), axis=1, keepdims=True) / tf.cast(nItemMax_y, tf.float32) # recall
+                    ) / (
+                        tf.reduce_sum(tf.reduce_max(cos_sim[i], axis=1), axis=1, keepdims=True) / tf.expand_dims(nItem,axis=1) +
+                        tf.reduce_sum(tf.reduce_max(tf.where(tf.not_equal(cos_sim[i], 0), cos_sim[i], tf.fill(cos_sim[i].shape, float('-inf'))), axis=2), axis=1, keepdims=True) / tf.cast(nItemMax_y, tf.float32)
+                    )
+                    for i in range(len(cos_sim))
+                ]
+            else:
+                f1_scores = [tf.reduce_sum(tf.linalg.diag_part(cos_sim[i]), axis=-1, keepdims=True) / tf.expand_dims(nItem, axis=1)
+                    for i in range(len(cos_sim))
+                ]
+  
         # ------------------------------
         f1_scores = tf.stack(f1_scores, axis=0)
-
+        
         return f1_scores
+    # calculate item wise cosine similarity
+    def cos_similarity(self, x):
+
+        x, y = x # x, y : (nSet_x(y), nItemMax, dim)
+        x_expand = tf.expand_dims(tf.nn.l2_normalize(x, axis=-1), 0) # (nSet_x, 1, nItemMax, head_size)
+        y_expand = tf.expand_dims(tf.nn.l2_normalize(y, axis=-1), 1) # (1, nSet_y, nItemMax, head_size)
+        cos_sim = tf.einsum('aijk,ibmk->abjm', y_expand, x_expand) # (nSet_y, nSet_x, nItemMax_x, nItemMax_y)
+
+        return cos_sim
     
+    def gram_matrix(self, input_tensor):
+        # result = tf.linalg.einsum('bijc,bijd->bcd', input_tensor, input_tensor)
+
+        result = tf.einsum('bnd,bne->bnde', input_tensor, input_tensor) # pixel loss
+        # result = tf.einsum('bnd,bnd->bn', input_tensor, input_tensor)
+        input_shape = tf.shape(input_tensor)
+        num_locations = tf.cast(input_shape[1]*input_shape[2], tf.float32)
+        return result/(num_locations)
+    
+    def style_content_loss(self, pred, ans, pred_size):
+        # style_outputs = outputs['style']
+        # content_outputs = outputs['content']
+        
+        # style pixel loss ver.
+        pred_gram = self.gram_matrix(pred)
+        ans_gram = self.gram_matrix(ans)
+        gram_shape = pred_gram.shape
+        pred_gram = tf.reshape(pred_gram, [gram_shape[0], gram_shape[1], gram_shape[2]*gram_shape[3]])
+        ans_gram = tf.reshape(ans_gram, [gram_shape[0], gram_shape[1], gram_shape[2]*gram_shape[3]])
+        item_style_loss = tf.reduce_sum(tf.reduce_mean(tf.square(pred_gram-ans_gram),axis=-1)) / pred_size
+        
+        # item_style_loss = tf.reduce_sum(tf.square(self.gram_matrix(pred)-self.gram_matrix(ans)),axis=-1) / pred_size
+        style_loss = tf.reduce_mean(item_style_loss)
+
+        return style_loss
     # convert class labels to cross-set label（if the class-labels are same, 1, otherwise 0)
     def cross_set_label(self, y):
         # rows of table
@@ -609,65 +750,122 @@ class SMN(tf.keras.Model):
 
         return tf.reshape(y,[dNum,-1])
 
-    def neg_down_sampling(self, y_true, y_pred):
-        # split to positive or negative data
-        mask_pos = tf.not_equal(y_true,0)
-        mask_neg = tf.not_equal(y_true,1)
+    def evaluate_inverse_ranks(self, array, target):
+        valid_indices = np.where(~np.isnan(array))[0]
+        valid_array = array.numpy()[valid_indices]
+        sorted_indices = np.argsort(valid_array)[::-1]
+        sorted_array = valid_array[sorted_indices]
+
+        if math.isnan(target):
+            ranks = -1
+        else:
+            rank = np.where(sorted_array == target)
+            if len(rank) > 0:
+                ranks = rank[0][0] + 1  # インデックスを1ベースに変換し、最も低いランクを追加
+                ranks = ranks / len(sorted_array)
+            else:
+                ranks = -1  # 要素が見つからない場合は-1を追加
+
+        return ranks
+
+    def set_retrieval_rank(self, cos_sim, y_true, c_label):      
+        # cos_sim, y_true, c_label = batch_data
+        # 必要な計算をここで行います
+        batch_size = c_label.shape[0]
+        num_items = c_label.shape[1]
+
+        # True indices (which batch corresponds to the true class for each sample)
+        true_indices = tf.argmax(y_true, axis=1)  # shape: (batch_size,)
+
+        # Initialize a list to accumulate the hinge loss for each batch
+        Batch_ranks = []
+        for batch_ind in range(batch_size):
+            ranks = []
+            for item_ind in range(num_items):
+                true_class_label = c_label[true_indices[batch_ind]][item_ind]
+
+                # Skip if the class label is 41
+                if true_class_label != 41:
+                    # Get indices where the class labels match the true class label
+                    indices = tf.where(c_label == true_class_label)
+
+                    # If there's only one match (i.e., the positive example itself)
+                    if len(indices[:, 0]) == 1:
+                        ranks.append(0)
+                    else:
+                        # Cosine similarity for the true positive
+                        positive_score = cos_sim[batch_ind, :, item_ind, item_ind][true_indices[batch_ind]]
+                        target_scores = tf.gather_nd(cos_sim[batch_ind, :,item_ind,:], indices)
+                        
+                        # Cosine similarities for the negative examples
+                        # target_scores = tf.stack([
+                        #     cos_sim[indices[i, 0], item_ind, indices[i, 1]]
+                        #     for i in range(indices.shape[0])
+                        # ])
+                        ranks.append(self.evaluate_inverse_ranks(target_scores, positive_score))
+
+                else:
+                    ranks.append(-1)
+
+            # Calculate the average loss for valid items
+            filtered_values = [v for v in ranks if v != -1]
+            if len(filtered_values) == 0:
+                Batch_ranks.append(0)
+            Batch_ranks.append(sum(filtered_values) / len(filtered_values))
+
+        # # Calculate the average loss across all batches
+        # Ranks = tf.reduce_mean(tf.stack(Batch_ranks))
         
-        # number of pos and neg
-        num_pos = tf.reduce_sum(tf.cast(mask_pos,tf.int32))
-        num_neg = tf.reduce_sum(tf.cast(mask_neg,tf.int32))
-        
-        # split
-        y_true_pos = tf.boolean_mask(y_true,mask_pos)
-        y_pred_pos = tf.boolean_mask(y_pred,mask_pos)
-        y_true_neg = tf.boolean_mask(y_true,mask_neg)
-        y_pred_neg = tf.boolean_mask(y_pred,mask_neg)
-
-        # select neg data
-        # select neg data
-        thre = tf.cast(1.0-num_pos/num_neg,float)
-        mask_neg_thre = tf.greater(tf.random.uniform([num_neg]),thre)
-        y_true_neg = tf.boolean_mask(y_true_neg,mask_neg_thre)
-        y_pred_neg = tf.boolean_mask(y_pred_neg,mask_neg_thre)
-
-        # concat
-        y_true = tf.concat([y_true_pos,y_true_neg],axis=0)
-        y_pred = tf.concat([y_pred_pos,y_pred_neg],axis=0)
-
-        return y_true, y_pred
+        return tf.stack(Batch_ranks)
+        # return tf.ones_like(c_label)
+    
     # train step
     def train_step(self,data):
-    
+        # c2ラベル導入の注意点: 10001 => 0 のようなラベルmappingが必須
+        # 抽出する予測候補は正解の位置のもの そのまま取り出すとクエリのものになるから
         # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
         x, y_true = data
         # x : (nSet, nItemMax, dim) , x_size : (nSet, )
-        x, x_size = x 
+        if len(x) == 2:
+            x, x_size = x
+        else:
+            x, x_size, c_label, c1_label = x 
         
+        y_true = self.cross_set_label(y_true)
+        y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+
+        if not self.use_all_pred:
+            # c_label (before): odd and even number index hasn't been shuffuled => c_label(after): each index indicates the answer
+            ans_c_label = tf.gather(c_label, tf.where(tf.equal(y_true,1))[:,1])
+            ans_c1_label = tf.gather(c1_label, tf.where(tf.equal(y_true,1))[:,1])
+            pred_size = tf.gather(x_size, tf.where(tf.equal(y_true,1))[:,1])
+        
+        # tf.where(tf.equal(y_true,1))[:,1]
         # gallery : (nSet, nItemMax, dim)
         gallery = x
         # gallery linear projection(dimmension reduction) 
         if self.isTrainableMLP:
-            gallery = self.fc1(gallery)
-            gallery = self.fc2(gallery)
-            gallery = self.fc3(gallery)
+            gallery, _ = self.MLP(gallery, training=False)
         else:
             gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
 
         with tf.GradientTape() as tape:
             # predict
             # predSMN : (nSet, nItemMax, d)
-            predCNN, predSMN, debug = self((x, x_size), training=True)
+            if not self.use_all_pred:
+                predCNN, predSMN, debug = self((x, x_size, ans_c_label, ans_c1_label, pred_size), training=True)
+            else:
+                predCNN, predSMN, debug = self((x, x_size), training=True)
+
+            if not self.label_slice:
+                predSMN = tf.gather(predSMN, ans_c1_label, batch_dims=1)
             
-            # cross set label creation
-            # y_true : [(1,0...,0),(0,1,...,0),...,(0,0,...,1)] locates where the positive is. (nSet, nSet) 
-            y_true = self.cross_set_label(y_true)
-            y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
-
-
             # compute similairty with gallery and f1_bert_score
             # input gallery as x and predSMN as y in each bellow set similarity function. 
-            if self.calc_set_sim == 'CS':
+            
+            if not self.use_all_pred :
+                cos_sim = self.cos_similarity((gallery, predSMN))
+            elif self.calc_set_sim == 'CS':
                 set_score = self.cross_set_score((gallery, predSMN), x_size)
             elif self.calc_set_sim == 'BERTscore':
                 set_score = self.BERT_set_score((gallery, predSMN), x_size)
@@ -675,13 +873,15 @@ class SMN(tf.keras.Model):
                 print("指定された集合間類似度を測る関数は存在しません")
                 sys.exit()
 
-            # # down sampling
-            # if self.is_neg_down_sample:
-            #     y_true, y_pred = self.neg_down_sampling(y_true, y_pred)
-
             # loss
-            loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
-
+            if not self.use_all_pred:
+                if self.is_c1label:
+                    # c1_label_tiled = tf.tile(tf.expand_dims(c1_label,axis=0), (len(c1_label),1,1))
+                    loss = self.compiled_loss(y_pred = cos_sim, y_true = c1_label, regularization_losses=self.losses)
+                else:
+                    loss = self.compiled_loss(y_pred = cos_sim, y_true = c_label, regularization_losses=self.losses)
+            else:
+                loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
         # train using gradients
         trainable_vars = self.trainable_variables
 
@@ -695,80 +895,129 @@ class SMN(tf.keras.Model):
             if grad is not None)
 
         # update metrics
-        self.compiled_metrics.update_state(set_score, y_true)
 
-        # return metrics as dictionary
-        return {m.name: m.result() for m in self.metrics}
+        if not self.use_all_pred:
+            if self.is_c1label:
+                pdb.set_trace()
+                # c1_label_tiled = tf.tile(tf.expand_dims(c1_label,axis=0), (len(c1_label),1,1))
+                custom_metric_value = self.set_retrieval_rank(cos_sim=cos_sim, y_true=y_true, c_label=c1_label)
+            else:
+                custom_metric_value = self.set_retrieval_rank(cos_sim, y_true, c_label)
+            self.compiled_metrics.update_state(y_true, custom_metric_value)
+            # return metrics as dictionary
+            return {m.name: m.result() for m in self.metrics}
+        else:
+            self.compiled_metrics.update_state(set_score, y_true)
+            # return metrics as dictionary
+            return {m.name: m.result() for m in self.metrics}
 
     # test step
     def test_step(self, data):
 
-        # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
         x, y_true = data
         # x : (nSet, nItemMax, dim) , x_size : (nSet, )
-        x , x_size = x
+        if len(x) == 2:
+            x, x_size = x
+        else:
+            x, x_size, c_label, c1_label = x 
+        #cross set label creation
+        # y_true : [(1,0...,0),(0,1,...,0),...,(0,0,...,1)] locates where the positive is. (nSet, nSet)
+        y_true = self.cross_set_label(y_true)
+        y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+
+        if not self.use_all_pred:
+            # c_label (before): odd and even number index hasn't been shuffuled => c_label(after): each index indicates the answer
+            ans_c_label = tf.gather(c_label, tf.where(tf.equal(y_true,1))[:,1])
+            ans_c1_label = tf.gather(c1_label, tf.where(tf.equal(y_true,1))[:,1])
+            pred_size = tf.gather(x_size, tf.where(tf.equal(y_true,1))[:,1])
+        
         # gallery : (nSet, nItemMax, dim)
         gallery = x 
 
         # gallery linear projection(dimmension reduction) 
         if self.isTrainableMLP:
-            gallery = self.fc1(gallery)
-            gallery = self.fc2(gallery)
-            gallery = self.fc3(gallery)
+            gallery, _ = self.MLP(gallery, training=False)
         else:
             gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
 
         # predict
         # predSMN : (nSet, nItemMax, d)
-        predCNN, predSMN, debug = self((x, x_size), training=False)
+        if not self.use_all_pred:
+            predCNN, predSMN, debug = self((x, x_size, ans_c_label, ans_c1_label, pred_size), training=False)
+        else:
+            predCNN, predSMN, debug = self((x, x_size), training=False)
         
-        #cross set label creation
-        # y_true : [(1,0...,0),(0,1,...,0),...,(0,0,...,1)] locates where the positive is. (nSet, nSet) 
-        y_true = self.cross_set_label(y_true)
-        y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+        if not self.label_slice:
+            predSMN = tf.gather(predSMN, ans_c1_label, batch_dims=1)
 
         # compute similairty with gallery and f1_bert_score
         # input gallery as x and predSMN as y in each bellow set similarity function. 
-        if self.calc_set_sim == 'CS':
+        if not self.use_all_pred :
+            cos_sim = self.cos_similarity((gallery, predSMN))
+        elif self.calc_set_sim == 'CS':
             set_score = self.cross_set_score((gallery, predSMN), x_size)
         elif self.calc_set_sim == 'BERTscore':
             set_score = self.BERT_set_score((gallery, predSMN), x_size)
         else:
             print("指定された集合間類似度を測る関数は存在しません")
             sys.exit()
-
-        # # down sampling
-        # if self.is_neg_down_sample:
-        #     y_true, y_pred = self.neg_down_sampling(y_true, y_pred)
-
+        
         # loss
-        self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
+        if not self.use_all_pred:
+            if self.is_c1label:
+                # c1_label_tiled = tf.tile(tf.expand_dims(c1_label,axis=0), (len(c1_label),1,1))
+                loss = self.compiled_loss(y_pred = cos_sim, y_true = c1_label, regularization_losses=self.losses)
+            else:
+                loss = self.compiled_loss(y_pred = cos_sim, y_true = c_label, regularization_losses=self.losses)
+        else:
+            loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
 
-        # update metrics
-        self.compiled_metrics.update_state(set_score, y_true)
-
-        # return metrics as dictionary
-        return {m.name: m.result() for m in self.metrics}
+        if not self.use_all_pred:
+            if self.is_c1label:
+                # c1_label_tiled = tf.tile(tf.expand_dims(c1_label,axis=0), (len(c1_label),1,1))
+                custom_metric_value = self.set_retrieval_rank(cos_sim, y_true, c1_label)
+            else:
+                custom_metric_value = self.set_retrieval_rank(cos_sim, y_true, c_label)
+            self.compiled_metrics.update_state(y_true, custom_metric_value)
+            # return metrics as dictionary
+            return {'loss': loss, 'Set_accuracy':self.metrics[0].result()}
+        else:
+            # update metrics
+            self.compiled_metrics.update_state(set_score, y_true)
+            # return metrics as dictionary
+            return {m.name: m.result() for m in self.metrics}
 
     # predict step
     def predict_step(self,data):
-        
         batch_data = data[0]
         # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
-        x, x_size, y_test, item_label  = batch_data
+        x, x_size, c_label, y_test, item_label  = batch_data
+        
+        #cross set label creation
+        # y_true : [(1,0...,0),(0,1,...,0),...,(0,0,...,1)] locates where the positive is. (nSet, nSet)
+        y_true = self.cross_set_label(y_test)
+        y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+
+        if not self.use_all_pred:
+            # c_label (before): odd and even number index hasn't been shuffuled => c_label(after): each index indicates the answer
+            ans_c_label = tf.gather(c_label, tf.where(tf.equal(y_true,1))[:,1])
+            pred_size = tf.gather(x_size, tf.where(tf.equal(y_true,1))[:,1])
+        
+
         # gallery : (nSet, nItemMax, dim)
         gallery = x
         # gallery linear projection(dimmension reduction) 
         if self.isTrainableMLP:
-            gallery = self.fc1(gallery)
-            gallery = self.fc2(gallery)
-            gallery = self.fc3(gallery)
+            gallery, _ = self.MLP(gallery, training=False)
         else:
             gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
 
         # predict
         # predSMN : (nSet, nItemMax, d)
-        predCNN, predSMN, debug = self((x, x_size), training=False)
+        predCNN, predSMN, debug = self((x, x_size, [], ans_c_label, pred_size), training=False)
+
+        if not self.label_slice:
+            predSMN = tf.gather(predSMN, ans_c_label, batch_dims=1)
 
         set_label = tf.cast(y_test, tf.int64)
         replicated_set_label = tf.tile(tf.expand_dims(set_label, axis=1), [1, len(x[0])])
