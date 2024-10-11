@@ -356,7 +356,11 @@ class CNN(tf.keras.Model):
         # return metrics as dictionary
         return {m.name: m.result() for m in self.metrics}
 #----------------------------
-    
+
+# ---------------山園追加部分------------------
+# class SetMatchingModel(tf.keras.Model)
+    # ここに集合マッチングモデルを
+# --------------------------------------------
 class CustomMetric(tf.keras.metrics.Metric):
     def __init__(self, name='custom_metric', **kwargs):
         super(CustomMetric, self).__init__(name=name, **kwargs)
