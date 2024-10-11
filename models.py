@@ -397,7 +397,7 @@ class CustomMetric(tf.keras.metrics.Metric):
 #----------------------------
 # set matching network
 class SMN(tf.keras.Model):
-    def __init__(self, isCNN=True, is_set_norm=False, is_TrainableMLP=True, num_layers=1, num_heads=2, calc_set_sim='BERTscore', baseChn=32, baseMlp = 512, rep_vec_num=1, seed_init = 0, max_channel_ratio=2, use_Cvec=True, is_Cvec_linear=False, use_all_pred=False, is_category_emb=False, c1_label=True):
+    def __init__(self, isCNN=True, is_set_norm=False, is_TrainableMLP=True, num_layers=1, num_heads=2, calc_set_sim='BERTscore', baseChn=32, baseMlp = 512, rep_vec_num=1, seed_init = 0, max_channel_ratio=2, is_Cvec_linear=False, use_all_pred=False, is_category_emb=False, c1_label=True):
         super(SMN, self).__init__()
         self.isCNN = isCNN
         self.num_layers = num_layers
@@ -407,7 +407,6 @@ class SMN(tf.keras.Model):
         self.baseChn = baseChn
         self.isTrainableMLP = is_TrainableMLP
         self.baseMlpChn = baseMlp
-        self.use_Cvec = use_Cvec
         self.is_Cvec_linear = is_Cvec_linear
         self.use_all_pred = use_all_pred
         self.is_category_emb = is_category_emb
@@ -455,6 +454,11 @@ class SMN(tf.keras.Model):
         self.cluster_moveable = False
         self.key_cluster = True
         #---------------------
+
+
+        # ---------------山園追加部分------------------
+        # マッチングモデルの初期化定義 self.Matching = []とか
+        # --------------------------------------------
         # seed_vec initialization with cluster vectors
         if self.seed_init == 0:
             self.set_emb = self.add_weight(name='set_emb',shape=(1, self.rep_vec_num,baseChn*max_channel_ratio),trainable=True)
@@ -617,7 +621,6 @@ class SMN(tf.keras.Model):
 
             debug[f'x_decoder_layer_{i+1}'] = x
         x_dec = x
-        
 
         return predCNN, y_pred, debug
     
@@ -859,6 +862,15 @@ class SMN(tf.keras.Model):
 
             if not self.label_slice:
                 predSMN = tf.gather(predSMN, ans_c1_label, batch_dims=1)
+
+            # ---------------山園追加部分------------------
+            # マッチングモデルを通した処理の記述など
+            # x: Query (Batch, N, dim), Y: Gallery (Batch, N, dim), predSMN: (Batch, N, dim)
+            # Realscore = G(x,Y)
+                # !!! 実際にはG(X)で済むかも。XとYはどちらも同じデータなので
+            # Fakescore = G(X,predSMN)
+                # ここが大変かも
+            # --------------------------------------------
             
             # compute similairty with gallery and f1_bert_score
             # input gallery as x and predSMN as y in each bellow set similarity function. 
@@ -949,6 +961,15 @@ class SMN(tf.keras.Model):
         
         if not self.label_slice:
             predSMN = tf.gather(predSMN, ans_c1_label, batch_dims=1)
+
+        # ---------------山園追加部分------------------
+        # マッチングモデルを通した処理の記述など
+        # x: Query (Batch, N, dim), Y: Gallery (Batch, N, dim), predSMN: (Batch, N, dim)
+        # Realscore = G(x,Y)
+            # !!! 実際にはG(X)で済むかも。XとYはどちらも同じデータなので
+        # Fakescore = G(X,predSMN)
+            # ここが大変かも
+        # --------------------------------------------
 
         # compute similairty with gallery and f1_bert_score
         # input gallery as x and predSMN as y in each bellow set similarity function. 

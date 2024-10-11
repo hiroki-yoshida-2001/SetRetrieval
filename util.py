@@ -27,20 +27,23 @@ def calc_set_sim_name(calc_set_sim):
 # parser for run.py
 def parser_run():
     parser = argparse.ArgumentParser()
+    # experiment settings
     parser.add_argument('-batch_size', type=int, default=50, help='The number of cordinate sets')
     parser.add_argument('-baseChn', type=int, default=32, help='number of base channel, default=32')
     parser.add_argument('-num_layers', type=int, default=3, help='number of layers (attentions) in encoder and decoder, default=3')
     parser.add_argument('-num_heads', type=int, default=5, help='number of heads in attention, default=5')
     parser.add_argument('-is_set_norm', type=int, default=1, help='switch of set-normalization (1:on, 0:off), default=1')
     parser.add_argument('-trial', type=int, default=1, help='index of trial, default=1')
-    parser.add_argument('-use_Cvec', type=int, default=1, help='Whether use Cvec')
-    parser.add_argument('-is_Cvec_linear', type=int, default=1, help='Whether learn FC_projection for Cluster seed vec')
+    # mlp related
     parser.add_argument('-pretrained_mlp', type=int, default=1, help='Whether pretrain MLP (not use FC_projection)')
     parser.add_argument('-mlp_projection_dim', type=int, default=128, help='MLP hidden last layer projects to the dimension')
-    parser.add_argument('-tf_data', type=int, default=0, help='0: numpy, 1: tf.data')
-    parser.add_argument('-category_emb', type=int, default=0, help='0: no category_emb, 1: implement category_emb')
+    parser.add_argument('-is_Cvec_linear', type=int, default=1, help='Whether learn FC_projection for Cluster seed vec')
     parser.add_argument('-use_all_pred', type=int, default=0, help='0: set_to_item retrieval, 1: set_to_set retrieval')
+    # dataset 
+    parser.add_argument('-tf_data', type=int, default=0, help='0: numpy, 1: tf.data')
     parser.add_argument('-label_ver', type=int, default=1, help='0: use c2_label, 1: use c1_label')
+    
+    parser.add_argument('-category_emb', type=int, default=0, help='0: no category_emb, 1: implement category_emb')
 
     return parser
 #----------------------------

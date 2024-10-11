@@ -75,8 +75,6 @@ else:
     rep_vec_num  = len(seed_vectors)
     seed_vectors = seed_vectors.tolist()
 
-    if not args.use_Cvec:
-        seed_vectors = 0
 
 #----------------------------
 # make Path
@@ -102,7 +100,6 @@ modelPath = os.path.join(modelPath,f"max_item_num{max_item_num}")
 modelPath = os.path.join(modelPath,f"layer{args.num_layers}")
 modelPath = os.path.join(modelPath,f"num_head{args.num_heads}")
 modelPath = os.path.join(modelPath,f"{args.trial}")
-modelPath = os.path.join(modelPath,f"use_Cvec_{args.use_Cvec}")
 modelPath = os.path.join(modelPath,f"is_Cvec_linear_{is_Cvec_linear}")
 modelPath = os.path.join(modelPath, f"use_c1_label{args.label_ver}")
 modelPath = os.path.join(modelPath, f"category_emb{args.category_emb}")
@@ -201,7 +198,7 @@ else:
 
 # set-matching network
 
-model_smn = models.SMN(isCNN=False, is_TrainableMLP=True, is_set_norm=args.is_set_norm, num_layers=args.num_layers, num_heads=args.num_heads, baseChn=args.baseChn, baseMlp = baseMLPChn, rep_vec_num=rep_vec_num, seed_init = seed_vectors, use_Cvec = args.use_Cvec, is_Cvec_linear=is_Cvec_linear, is_category_emb=args.category_emb, use_all_pred=args.use_all_pred, c1_label=args.label_ver)
+model_smn = models.SMN(isCNN=False, is_TrainableMLP=True, is_set_norm=args.is_set_norm, num_layers=args.num_layers, num_heads=args.num_heads, baseChn=args.baseChn, baseMlp = baseMLPChn, rep_vec_num=rep_vec_num, seed_init = seed_vectors, is_Cvec_linear=is_Cvec_linear, is_category_emb=args.category_emb, use_all_pred=args.use_all_pred, c1_label=args.label_ver)
 
 checkpoint_path = os.path.join(modelPath,"model/cp.ckpt")
 checkpoint_dir = os.path.dirname(checkpoint_path)
