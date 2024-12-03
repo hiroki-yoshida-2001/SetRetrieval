@@ -408,7 +408,7 @@ class CustomMetric(tf.keras.metrics.Metric):
 #----------------------------
 # set matching network
 class SMN(tf.keras.Model):
-    def __init__(self, isCNN=True, is_set_norm=False, is_TrainableMLP=True, num_layers=1, num_heads=2, calc_set_sim='BERTscore', baseChn=32, baseMlp = 512, rep_vec_num=1, seed_init = 0, max_channel_ratio=2, is_Cvec_linear=False, use_all_pred=False, is_category_emb=False, c1_label=True):
+    def __init__(self, isCNN=True, is_set_norm=False, is_TrainableMLP=True, num_layers=1, num_heads=2, calc_set_sim='BERTscore', baseChn=32, baseMlp = 512, rep_vec_num=1, seed_init = 0, max_channel_ratio=2, is_Cvec_linear=False, use_all_pred=False, is_category_emb=False, c1_label=True, cos_sim_loss = 'CE', style_loss = 'item_style'):
         super(SMN, self).__init__()
         self.isCNN = isCNN
         self.num_layers = num_layers
@@ -422,6 +422,8 @@ class SMN(tf.keras.Model):
         self.use_all_pred = use_all_pred
         self.is_category_emb = is_category_emb
         self.is_c1label = c1_label
+        self.cos_sim_method = cos_sim_loss
+        self.style_method = style_loss
         
         if self.seed_init != 0:
             self.dim_shift15 = len(self.seed_init[0])
@@ -498,7 +500,7 @@ class SMN(tf.keras.Model):
         self.MLP = []
 
         # category embedded vector
-        self.category_emb = [self.add_weight(name='category_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[i], category_emb=True),trainable=True) for i in range(len(self.seed_init))]
+        # self.category_emb = [self.add_weight(name='category_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[i], category_emb=True),trainable=True) for i in range(len(self.seed_init))]
 
         
     def custom_initializer(self, initial_values, category_emb=False, c2toc1=False):
@@ -740,15 +742,15 @@ class SMN(tf.keras.Model):
         return result/(num_locations)
     
     def style_content_loss(self, pred, ans, pred_size):
-        
         # style_outputs = outputs['style']
         # content_outputs = outputs['content']
         # style pixel loss ver.
         pred_gram = self.gram_matrix(pred)
-        # ans_gram = self.gram_matrix(ans)
-        
-        ans_gram = tf.stack([self.gram_matrix(ans[i]) for i in range(len(pred))]) # PIFR ver
-        ans_gram = tf.stack([ans_gram[i,i,:,:,:] for i in range(len(pred))])
+        if self.style_method == 'item_style':
+            ans_gram = self.gram_matrix(ans)
+        elif self.style_method == 'DFA_style':
+            ans_gram = tf.stack([self.gram_matrix(ans[i]) for i in range(len(pred))]) # PIFR ver
+            ans_gram = tf.stack([ans_gram[i,i,:,:,:] for i in range(len(pred))])
         
         gram_shape = pred_gram.shape
         pred_gram = tf.reshape(pred_gram, [gram_shape[0], gram_shape[1], gram_shape[2]*gram_shape[3]])
@@ -760,6 +762,7 @@ class SMN(tf.keras.Model):
         style_loss = tf.reduce_mean(item_style_loss)
 
         return style_loss
+    
     def SetMatchingScore_loss(self, g_Real, g_fake):
         Loss  = tf.math.log(1.0 + tf.exp(g_Real - g_fake))
         return tf.reduce_mean(Loss)
@@ -1051,8 +1054,7 @@ class SMN(tf.keras.Model):
         hinge_Loss = sum(Set_hinge_losssum) / len(Set_hinge_losssum)
         
         # style loss + hinge loss
-        # Loss = 0.5 * hinge_Loss + style_loss
-        Loss = hinge_Loss
+        Loss = 0.1 * hinge_Loss
         # Loss = style_loss
 
         return Loss
@@ -1087,7 +1089,7 @@ class SMN(tf.keras.Model):
             gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
 
         # マッチングモデルを通した処理の記述など
-        _, Real_score, _ = self.SetMatchingModel((tf.constant(gallery.numpy()), x_size), training=False)
+        _, Real_score, _ = self.SetMatchingModel((gallery, x_size), training=False)
         Real_score = tf.reshape(Real_score, [gallery.shape[0], gallery.shape[0]])
         Real_score = tf.linalg.diag_part(tf.gather(Real_score,tf.where(tf.equal(y_true,1))[:,1]))
         with tf.GradientTape() as tape:
@@ -1103,7 +1105,7 @@ class SMN(tf.keras.Model):
             
             # ---------------山園追加部分------------------
 
-            tiled_gallery = tf.tile(tf.expand_dims(tf.constant(gallery.numpy()), axis=1), [1,gallery.shape[0],1,1])
+            tiled_gallery = tf.tile(tf.expand_dims(gallery, axis=1), [1,gallery.shape[0],1,1])
             # for文でペアになる部分をpredSMNで置換
             # 分かりやすいように対角にpairが来るようにしています Real_scoreはy_true参照の非対角の並び方
             for batch_ind in range(len(tiled_gallery)):
@@ -1111,21 +1113,12 @@ class SMN(tf.keras.Model):
             _, Fake_score, _ = self.SetMatchingModel((tiled_gallery, x_size), training=False)
             Fake_score = tf.reshape(Fake_score, [gallery.shape[0], gallery.shape[0]])
             Fake_score = tf.linalg.diag_part(Fake_score)
-
+            
             # --------------------------------------------
             setMatchingloss = self.SetMatchingScore_loss(Real_score, Fake_score)
             # compute similairty with gallery and f1_bert_score
             # input gallery as x and predSMN as y in each bellow set similarity function. 
-            '''
-            # PIFR function - PIFR accuracy
-            weights = self.compute_representation_weights(predSMN, gallery, x_size)
-            # y_predごとにgalleryの各集合をPIFR weightで再構成
-            weights_gallery = [tf.matmul(weights[i][j], gallery[j]) for i in range(predSMN.shape[0]) for j in range(gallery.shape[0])] 
-            weights_gallery = tf.reshape(weights_gallery, [predSMN.shape[0], gallery.shape[0], gallery.shape[1], gallery.shape[2]])
-            # -------------- - PIFR style
-            style_loss = self.style_content_loss(predSMN, weights_gallery, pred_size)
-            # -----------------------------
-            '''
+
             if not self.use_all_pred :
                 cos_sim_before = self.cos_similarity((gallery, predSMN), PIFR=False)
                 # cos_sim = self.cos_similarity((weights_gallery, predSMN), PIFR=True)
@@ -1137,27 +1130,51 @@ class SMN(tf.keras.Model):
                 print("指定された集合間類似度を測る関数は存在しません")
                 sys.exit()
             
-            '''
-            PIFR_score = tf.reduce_sum(tf.linalg.diag_part(cos_sim),axis=-1)/ tf.expand_dims(pred_size,axis=-1)
-            # PIFR_loss
-            PIFR_loss = self.PIFR_Loss(PIFR_score, y_true, Loss_method='Hinge')
-            '''
-            # loss
-            # item_hinge_loss ver...
-            hinge_loss = self.item_hinge_loss(cos_sim=cos_sim_before, y_true=y_true, c_label=c1_label, pred=predSMN, ans=tf.gather(gallery, tf.where(tf.equal(y_true,1))[:,1]), pred_size=pred_size)
+            # cos_sim loss related
+            if self.cos_sim_method == 'CE':
+                cos_sim_loss = 0
+            elif self.cos_sim_method == 'Hinge':
+                cos_sim_loss = self.item_hinge_loss(cos_sim=cos_sim_before, y_true=y_true, c_label=c1_label, pred=predSMN, ans=tf.gather(gallery, tf.where(tf.equal(y_true,1))[:,1]), pred_size=pred_size)
+            else:
+                # PIFR function - PIFR accuracy
+                weights = self.compute_representation_weights(predSMN, gallery, x_size)
+                # y_predごとにgalleryの各集合をPIFR weightで再構成
+                weights_gallery = [tf.matmul(weights[i][j], gallery[j]) for i in range(predSMN.shape[0]) for j in range(gallery.shape[0])] 
+                weights_gallery = tf.reshape(weights_gallery, [predSMN.shape[0], gallery.shape[0], gallery.shape[1], gallery.shape[2]])
+
+                cos_sim_after = self.cos_similarity((weights_gallery, predSMN), PIFR=True)
+                PIFR_score = tf.reduce_sum(tf.linalg.diag_part(cos_sim_after),axis=-1)/ tf.expand_dims(pred_size,axis=-1)
+                cos_sim_loss = self.PIFR_Loss(PIFR_score, y_true, Loss_method='Hinge')
+            # style loss related
+            if self.style_method == 'item_style':
+                style_loss = self.style_content_loss(predSMN, gallery, pred_size)
+            elif self.style_method == 'DFA_style':
+                if self.cos_sim_method != 'DFA':
+                    # PIFR function - PIFR accuracy
+                    weights = self.compute_representation_weights(predSMN, gallery, x_size)
+                    # y_predごとにgalleryの各集合をPIFR weightで再構成
+                    weights_gallery = [tf.matmul(weights[i][j], gallery[j]) for i in range(predSMN.shape[0]) for j in range(gallery.shape[0])] 
+                    weights_gallery = tf.reshape(weights_gallery, [predSMN.shape[0], gallery.shape[0], gallery.shape[1], gallery.shape[2]])
+                    style_loss = self.style_content_loss(predSMN, weights_gallery, pred_size)
+                else:
+                    style_loss = self.style_content_loss(predSMN, weights_gallery, pred_size)
+            
             if not self.use_all_pred:
                 if self.is_c1label:
                     # c1_label_tiled = tf.tile(tf.expand_dims(c1_label,axis=0), (len(c1_label),1,1))
-                    loss = self.compiled_loss(y_pred = cos_sim_before, y_true = c1_label, regularization_losses=self.losses) + setMatchingloss + hinge_loss#+ style_loss * 5.0 + PIFR_loss
+                    loss = self.compiled_loss(y_pred = cos_sim_before, y_true = c1_label, regularization_losses=self.losses) + cos_sim_loss + style_loss + setMatchingloss
                 else:
                     loss = self.compiled_loss(y_pred = cos_sim, y_true = c_label, regularization_losses=self.losses)
             else:
                 loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
         # train using gradients
         trainable_vars = self.trainable_variables
-
+        
+        
         # train parameters excepts for CNN
         trainable_vars = [v for v in trainable_vars if 'cnn' not in v.name]
+        trainable_vars = [v for v in trainable_vars if 'set_matching_model' not in v.name]
+       
         gradients = tape.gradient(loss, trainable_vars)
 
         self.optimizer.apply_gradients(
@@ -1168,20 +1185,20 @@ class SMN(tf.keras.Model):
         # update metrics
 
         if not self.use_all_pred:
-            
+            '''
             if self.is_c1label:
                 # c1_label_tiled = tf.tile(tf.expand_dims(c1_label,axis=0), (len(c1_label),1,1))
                 custom_metric_value = self.set_retrieval_rank(cos_sim=cos_sim_before, y_true=y_true, c_label=c1_label)
             else:
                 custom_metric_value = self.set_retrieval_rank(cos_sim, y_true, c_label)
-            
-            self.compiled_metrics.update_state(y_true, custom_metric_value)
+            '''
+            self.compiled_metrics.update_state(y_true, Fake_score)
             # category accuracyの導入
             # custom_metric_valueで最近傍ベクトルのラベルを返せれば
             # pred_label = self.return_pred_label(cos_sim_before, c1_label)
             # self.compiled_metrics.update_state(pred_label, ans_c1_label)
             # return metrics as dictionary
-            return {'loss': loss, 'Set_accuracy':self.metrics[1].result()}
+            return {'Match_loss': setMatchingloss, 'style_loss': style_loss, 'Set_accuracy':self.metrics[1].result()}
         else:
             self.compiled_metrics.update_state(set_score, y_true)
             # return metrics as dictionary
@@ -1244,17 +1261,6 @@ class SMN(tf.keras.Model):
         # --------------------------------------------
         setMatchingloss = self.SetMatchingScore_loss(Real_score, Fake_score)
         # --------------------------------------------
-        '''
-        # PIFR function - PIFR accuracy
-        weights = self.compute_representation_weights(predSMN, gallery, x_size)
-        # y_predごとにgalleryの各集合をPIFR weightで再構成
-        weights_gallery = [tf.matmul(weights[i][j], gallery[j]) for i in range(predSMN.shape[0]) for j in range(gallery.shape[0])] 
-        weights_gallery = tf.reshape(weights_gallery, [predSMN.shape[0], gallery.shape[0], gallery.shape[1], gallery.shape[2]])
-        # -------------- - PIFR style
-        style_loss = self.style_content_loss(predSMN, weights_gallery, pred_size)
-        '''
-        # compute similairty with gallery and f1_bert_score
-        # input gallery as x and predSMN as y in each bellow set similarity function. 
         if not self.use_all_pred :
             cos_sim_before = self.cos_similarity((gallery, predSMN), PIFR=False)
             # cos_sim = self.cos_similarity((weights_gallery, predSMN), PIFR=True)
@@ -1266,36 +1272,58 @@ class SMN(tf.keras.Model):
             print("指定された集合間類似度を測る関数は存在しません")
             sys.exit()
         
-        # loss
-        '''
-        PIFR_score = tf.reduce_sum(tf.linalg.diag_part(cos_sim),axis=-1)/ tf.expand_dims(pred_size,axis=-1)
-        # PIFR_loss
-        PIFR_loss = self.PIFR_Loss(PIFR_score, y_true, Loss_method='Hinge')
-        '''
-        hinge_loss = self.item_hinge_loss(cos_sim=cos_sim_before, y_true=y_true, c_label=c1_label, pred=predSMN, ans=tf.gather(gallery, tf.where(tf.equal(y_true,1))[:,1]), pred_size=pred_size)
+        # cos_sim loss related
+        if self.cos_sim_method == 'CE':
+            cos_sim_loss = 0
+        elif self.cos_sim_method == 'Hinge':
+            cos_sim_loss = self.item_hinge_loss(cos_sim=cos_sim_before, y_true=y_true, c_label=c1_label, pred=predSMN, ans=tf.gather(gallery, tf.where(tf.equal(y_true,1))[:,1]), pred_size=pred_size)
+        else:
+            # PIFR function - PIFR accuracy
+            weights = self.compute_representation_weights(predSMN, gallery, x_size)
+            # y_predごとにgalleryの各集合をPIFR weightで再構成
+            weights_gallery = [tf.matmul(weights[i][j], gallery[j]) for i in range(predSMN.shape[0]) for j in range(gallery.shape[0])] 
+            weights_gallery = tf.reshape(weights_gallery, [predSMN.shape[0], gallery.shape[0], gallery.shape[1], gallery.shape[2]])
+
+            cos_sim_after = self.cos_similarity((weights_gallery, predSMN), PIFR=True)
+            PIFR_score = tf.reduce_sum(tf.linalg.diag_part(cos_sim_after),axis=-1)/ tf.expand_dims(pred_size,axis=-1)
+            cos_sim_loss = self.PIFR_Loss(PIFR_score, y_true, Loss_method='Hinge')
+        # style loss related
+        if self.style_method == 'item_style':
+            style_loss = self.style_content_loss(predSMN, gallery, pred_size)
+        elif self.style_method == 'DFA_style':
+            if self.cos_sim_method != 'DFA':
+                # PIFR function - PIFR accuracy
+                weights = self.compute_representation_weights(predSMN, gallery, x_size)
+                # y_predごとにgalleryの各集合をPIFR weightで再構成
+                weights_gallery = [tf.matmul(weights[i][j], gallery[j]) for i in range(predSMN.shape[0]) for j in range(gallery.shape[0])] 
+                weights_gallery = tf.reshape(weights_gallery, [predSMN.shape[0], gallery.shape[0], gallery.shape[1], gallery.shape[2]])
+                style_loss = self.style_content_loss(predSMN, weights_gallery, pred_size)
+            else:
+                style_loss = self.style_content_loss(predSMN, weights_gallery, pred_size)
         if not self.use_all_pred:
             if self.is_c1label:
                 # c1_label_tiled = tf.tile(tf.expand_dims(c1_label,axis=0), (len(c1_label),1,1))
                 # loss = self.compiled_loss(y_pred = cos_sim, y_true = c1_label, regularization_losses=self.losses)
-                loss = self.compiled_loss(y_pred = cos_sim_before, y_true = c1_label, regularization_losses=self.losses) +setMatchingloss  + hinge_loss#+ style_loss * 5.0 + PIFR_loss
+                loss = self.compiled_loss(y_pred = cos_sim_before, y_true = c1_label, regularization_losses=self.losses) + cos_sim_loss + style_loss +setMatchingloss 
             else:
                 loss = self.compiled_loss(y_pred = cos_sim, y_true = c_label, regularization_losses=self.losses)
         else:
             loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
 
         if not self.use_all_pred:
-            
+            '''
             if self.is_c1label:
                 # c1_label_tiled = tf.tile(tf.expand_dims(c1_label,axis=0), (len(c1_label),1,1))
                 custom_metric_value = self.set_retrieval_rank(cos_sim_before, y_true, c1_label)
             else:
                 custom_metric_value = self.set_retrieval_rank(cos_sim, y_true, c_label)
-            
-            self.compiled_metrics.update_state(y_true, custom_metric_value)
+            '''
+            # self.compiled_metrics.update_state(y_true, custom_metric_value)
+            self.compiled_metrics.update_state(y_true, Fake_score)
             # pred_label = self.return_pred_label(cos_sim_before, c1_label)
             # self.compiled_metrics.update_state(pred_label, ans_c1_label)
             # return metrics as dictionary
-            return {'loss': loss, 'Set_accuracy':self.metrics[1].result()}
+            return {'Match_loss': setMatchingloss, 'style_loss': style_loss, 'Set_accuracy':self.metrics[1].result()}
             # return {m.name: m.result() for m in self.metrics}
         else:
             # update metrics
@@ -1327,40 +1355,6 @@ class SMN(tf.keras.Model):
             gallery, _ = self.MLP(gallery, training=False)
         else:
             gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
-        '''
-        # gram matrix evaluation method
-        # item 方向は考慮していないため 同じitem軸での計算になっていることに注意
-        # Input : gallery (Batch, Nitem, Dim) gallery (Batch, Nitem, Dim) 
-        # Output : gram matrix or MSE calculated with gram matrix (Batch, Batch, Nitem) and top_5_index (Batch, 5, 5)
-        MSE, top_5_index, top_5_cos = self.style_gram_checker(gallery[:400]) # computation available may be up to 450
-        MSE2, top_5_index2, top_5_cos2 = self.style_gram_checker(gallery[400:800])
-
-
-        style_similar_set_name = tf.gather(y_test, top_5_index)
-        style_similar_item_name = tf.gather(item_label, top_5_index)
-
-        cos_similar_set_name = tf.gather(y_test, top_5_cos)[:,:,:,0]
-        cos_similar_item_name = tf.gather_nd(item_label, top_5_cos)
-
-        style_similar_set_name2 = tf.gather(y_test, top_5_index2)
-        style_similar_item_name2 = tf.gather(item_label, top_5_index2)
-
-        cos_similar_set_name2 = tf.gather(y_test, top_5_cos2)[:,:,:,0]
-        cos_similar_item_name2 = tf.gather_nd(item_label, top_5_cos2)
-
-        style_similar_path = "cos_style_similar_set.pickle"
-        with open (style_similar_path, 'wb') as fp:
-            pickle.dump(style_similar_set_name,fp)
-            pickle.dump(style_similar_item_name,fp)
-            pickle.dump(style_similar_set_name2,fp)
-            pickle.dump(style_similar_item_name2,fp)
-            pickle.dump(c_label[:800], fp)
-            pickle.dump(cos_similar_set_name, fp)
-            pickle.dump(cos_similar_item_name, fp)
-            pickle.dump(cos_similar_set_name2, fp)
-            pickle.dump(cos_similar_item_name2, fp)
-        pdb.set_trace()
-        '''
         # predict
         # predSMN : (nSet, nItemMax, d)
         predCNN, predSMN, debug = self((x, x_size, [], ans_c_label, pred_size), training=False)
@@ -1368,25 +1362,28 @@ class SMN(tf.keras.Model):
         if not self.label_slice:
             predSMN = tf.gather(predSMN, ans_c_label, batch_dims=1)
         
-        # マッチングモデルを通した処理の記述など
-        _, Real_score, _ = self.SetMatchingModel((gallery, x_size), training=False)
-        Real_score = tf.reshape(Real_score, [gallery.shape[0], gallery.shape[0]])
-        Real_score = tf.linalg.diag_part(tf.gather(Real_score,tf.where(tf.equal(y_true,1))[:,1]))
-        # Matching scoreはミニバッチごとに行わないとメモリ不足になる
-        tiled_gallery = tf.tile(tf.expand_dims(gallery, axis=1), [1,gallery.shape[0],1,1])
-        # for文でペアになる部分をpredSMNで置換
-        # 分かりやすいように対角にpairが来るようにしています Real_scoreはy_true参照の非対角の並び方
-        for batch_ind in range(len(tiled_gallery)):
-            tiled_gallery = tf.tensor_scatter_nd_update(tiled_gallery, [[batch_ind, batch_ind]],[predSMN[batch_ind]])
-        _, Fake_score, _ = self.SetMatchingModel((tiled_gallery, x_size), training=False)
-        Fake_score = tf.reshape(Fake_score, [gallery.shape[0], gallery.shape[0]])
-        Fake_score = tf.linalg.diag_part(Fake_score)
+        if len(x) <= 100:
+            # マッチングモデルを通した処理の記述など
+            _, Real_score, _ = self.SetMatchingModel((gallery, x_size), training=False)
+            Real_score = tf.reshape(Real_score, [gallery.shape[0], gallery.shape[0]])
+            Real_score = tf.linalg.diag_part(tf.gather(Real_score,tf.where(tf.equal(y_true,1))[:,1]))
+            # Matching scoreはミニバッチごとに行わないとメモリ不足になる
+            tiled_gallery = tf.tile(tf.expand_dims(gallery, axis=1), [1,gallery.shape[0],1,1])
+            # for文でペアになる部分をpredSMNで置換
+            # 分かりやすいように対角にpairが来るようにしています Real_scoreはy_true参照の非対角の並び方
+            for batch_ind in range(len(tiled_gallery)):
+                tiled_gallery = tf.tensor_scatter_nd_update(tiled_gallery, [[batch_ind, batch_ind]],[predSMN[batch_ind]])
+            _, Fake_score, _ = self.SetMatchingModel((tiled_gallery, x_size), training=False)
+            Fake_score = tf.reshape(Fake_score, [gallery.shape[0], gallery.shape[0]])
+            Fake_score = tf.linalg.diag_part(Fake_score)
         
         
         set_label = tf.cast(y_test, tf.int64)
         replicated_set_label = tf.tile(tf.expand_dims(set_label, axis=1), [1, len(x[0])])
         query_id = tf.stack([replicated_set_label, item_label],axis=1)
         query_id = tf.transpose(query_id, [0,2,1])
-
-        return predSMN, gallery, replicated_set_label, query_id, Real_score, Fake_score
+        if len(x) <= 100:
+            return predSMN, gallery, replicated_set_label, query_id, Real_score, Fake_score
+        else:
+            return predSMN, gallery, replicated_set_label, query_id
 #----------------------------
