@@ -245,84 +245,109 @@ def swap_query_positive(array):
 
     return swapped_indices
 def Set_item_Cross_entropy(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
-    '''
-    # 正解集合の特定に問題あり: y_true (set_label) を使って探すべき,..., 2変数しか入力できない
-    # 隣のインデックスがセットになっていると仮定
+    
     y_true = create_true_index(labels.shape[0])
     set_size = tf.reduce_sum(tf.cast(labels != 41, tf.float32), axis=1)
     pred_set_size = tf.gather(set_size, tf.where(tf.equal(y_true,1))[:,1])
-    bce = tf.losses.BinaryCrossentropy(from_logits=True)
-    CCE = tf.losses.CategoricalCrossentropy(from_logits=True)
+    negative_sampling = "max"
     # -------------------------------------
-
-    # matrix = np.eye(labels.shape[0]*labels.shape[1])
-
-    # matrix_ind = swap_query_positive(matrix)
-
-    # matrix = tf.gather(matrix, matrix_ind)
     
     batch_loss = []
+    # bce = tf.losses.BinaryCrossentropy(from_logits=False)
     for batch_ind in range(labels.shape[0]):
         item_loss = []
         for item_ind in range(labels.shape[1]):
-            target_cos_sim = cos_sim[batch_ind,:, item_ind, :]
-
-            target_label = labels[tf.where(tf.equal(y_true,1))[:,1][batch_ind]][item_ind]
-            
-            if target_label == 41:
+            target_label = labels[tf.where(tf.equal(y_true,1))[:,1][batch_ind]][item_ind] # 予測カテゴリの取得
+            if target_label == 41:# 0パディングの時
                 item_loss.append(0)
             else:
                 positive_score = cos_sim[batch_ind, :, item_ind, item_ind][tf.where(y_true==1)[:,1][batch_ind]]
-                #item label 絞りversion
-                indices = tf.where(labels == target_label)
-                if len(indices[:, 0]) == 1:
-                    item_loss.append(0)
+                indices = tf.where(labels == target_label) # 同じカテゴリのアイテムインデックスを検索
+                if len(indices[:, 0]) == 1: # 同じカテゴリのnegativeがない場合
+                    padding_mask = tf.cast(labels!=41,tf.float32)
+                    # all scores
+                    pred_scores = tf.reshape(cos_sim[batch_ind, :, item_ind, :],-1)
+                    
+                    label = tf.zeros((labels.shape[0], labels.shape[1]), dtype=tf.float32)
+                    label = tf.tensor_scatter_nd_update(label, [[indices[:,0].numpy()[0], item_ind]], [1])
+                    label = tf.reshape(label, -1)
+                    
+                    # losses manually
+                    # Extract positive scores using Label: (Batch, N)
+                    positive_scores = tf.reduce_sum(pred_scores * label)
+                    
+                    # Mask out positive positions for negatives: (Batch, N, Batch)
+                    negative_mask = 1.0 - label
+                    negative_scores = pred_scores * negative_mask
+
+                    negative_scores = tf.boolean_mask(negative_scores, tf.reshape(padding_mask,-1))
+
+                    if negative_sampling == "max":
+                        negative_scores = tf.reduce_max(negative_scores)
+                    elif negative_sampling == "top5":
+                        if len(negative_scores) <= 5:
+                            negative_scores = tf.reduce_mean(negative_scores)
+                        else:
+                            negative_scores = tf.reduce_mean(tf.math.top_k(negative_scores, k=5).values)
+                    
+                    # Calculate exponential scores for negative normalization: (Batch, N, Batch)
+                    exp_negative_scores = tf.exp(negative_scores)
+                    
+                    # Calculate exponential scores for negative normalization: (Batch, N, Batch)
+                    # exp_negative_scores = tf.exp(negative_scores)
+                    exp_positive_scores = tf.exp(positive_scores)
+                    
+                    # Denominator includes positive and all negative scores: (Batch, N)
+                    denom = exp_negative_scores + exp_positive_scores
+                    
+                    # Contrastive loss for each item: (Batch, N)
+                    entropy_loss = -tf.math.log(exp_positive_scores / denom)
+                    item_loss.append(entropy_loss)
+                    # item_loss.append(0)
                 else:
                     true_indices = tf.argmax(y_true, axis=1)
-                    # negative_score = tf.stack([
-                    #     cos_sim[batch_ind, indices[i, 0], item_ind, indices[i, 1]]
-                    #     for i in range(indices.shape[0])
-                    #     if indices[i, 0] != true_indices[batch_ind]
-                    # ])
                     pred_scores = tf.stack([
                         cos_sim[batch_ind, indices[i, 0], item_ind, indices[i, 1]]
                         for i in range(indices.shape[0])
                     ])
+                    label = tf.cast(tf.equal(indices[:,0], true_indices[batch_ind]), tf.float32)
                     
-                    label = tf.cast(tf.equal(indices[:,0], true_indices[0]), tf.int64)
-                    entropy_loss = bce(label, pred_scores)
-                    # マスクされた logits と labels で softmax_cross_entropy_with_logits を計算
-                    # entropy_loss = tf.math.log(tf.exp(positive_score)/(tf.reduce_sum(tf.exp(negative_score))))
-                    # pred_scores = tf.stack([
-                    #     cos_sim[batch_ind, indices[i, 0], item_ind, indices[i, 1]]
-                    #     for i in range(indices.shape[0])
-                    # ])
+                    # contrastive loss
+                    if sum(label) >= 2: #Zのラベルが重複している場合positive_scoreと一致しているものが真値
+                        label = tf.cast(tf.equal(pred_scores, positive_score), tf.float32)
+                    # losses manually
+                    # Extract positive scores using Label: (Batch, N)
+                    positive_scores = tf.reduce_sum(pred_scores * label)
+                    
+                    # Mask out positive positions for negatives: (Batch, N, Batch)
+                    negative_mask = 1.0 - label
+                    negative_scores = tf.boolean_mask(pred_scores,negative_mask)
+
+                    if negative_sampling == "max":
+                        negative_scores = tf.reduce_max(negative_scores)
+                    elif negative_sampling == "top5":
+                        if len(negative_scores) <= 5:
+                            negative_scores = tf.reduce_mean(negative_scores)
+                        else:
+                            negative_scores = tf.reduce_mean(tf.math.top_k(negative_scores, k=5).values)
+                    
+                    # Calculate exponential scores for negative normalization: (Batch, N, Batch)
+                    exp_negative_scores = tf.exp(negative_scores)
+                    exp_positive_scores = tf.exp(positive_scores)
+                    
+                    # Denominator includes positive and all negative scores: (Batch, N)
+                    denom = exp_negative_scores + exp_positive_scores
+                    
+                    # Contrastive loss for each item: (Batch, N)
+                    entropy_loss = -tf.math.log(exp_positive_scores / denom)
+                    # entropy_loss = bce(label, pred_scores)
                     item_loss.append(entropy_loss)
-                    
-                
-            
-                # exclude_row, exclude_col = tf.where(y_true==1)[:,1][batch_ind].numpy(), item_ind
-
-                # rows, cols = tf.meshgrid(tf.range(labels.shape[0]), tf.range(labels.shape[1]), indexing='ij')
-                # all_indices = tf.stack([rows, cols], axis=-1)
-
-                # mask = tf.logical_and(
-                #         tf.logical_not(tf.logical_and(rows == exclude_row, cols == exclude_col)),
-                #         labels != 41  # さらに -1 でない部分を保持するマスク
-                #     )
-
-                # filterd_labels = tf.boolean_mask(labels, mask)
-
-                # negative_score = tf.boolean_mask(target_cos_sim, mask)
-                
-                # entropy_loss = tf.nn.softmax_cross_entropy_with_logits(labels=tf.reshape(binary_labels,-1), logits=tf.reshape(target_cos_sim, -1))
-
+             
         batch_loss.append(sum(item_loss) / pred_set_size[batch_ind])
-    
+
     Loss = tf.stack(batch_loss)
-    '''
     
-    return 0.0
+    return Loss
 
 def Category_accuracy(pred_labels, true_labels):
     # まず、41を無視したマスクを作成
@@ -425,8 +450,16 @@ def cross_set_label(y):
     labels = tf.cast(y_rows == y_cols, float)            
     return labels
 
-def compute_test_rank(gallery, pred, set_label, category):
+def gram_matrix(input_tensor):
+    # result = tf.linalg.einsum('bijc,bijd->bcd', input_tensor, input_tensor)
 
+    result = tf.einsum('bnd,bne->bnde', input_tensor, input_tensor) # pixel loss
+    # result = tf.einsum('bnd,bnd->bn', input_tensor, input_tensor)
+    input_shape = tf.shape(input_tensor)
+    num_locations = tf.cast(input_shape[1]*input_shape[2], tf.float32)
+    return result/(num_locations)
+def compute_test_rank(gallery, pred, set_label, category):
+    
     y_true = cross_set_label(set_label)
     y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
     # y_true = y_true[:100]
@@ -447,14 +480,13 @@ def compute_test_rank(gallery, pred, set_label, category):
     x_expand = np.expand_dims(x_norm, 0) # (nSet_x, 1, nItemMax, head_size)
     y_expand = np.expand_dims(y_norm, 1) # (1, nSet_y, nItemMax, head_size)
     cos_sim = np.einsum('aijk,ibmk->abjm', y_expand, x_expand, optimize='optimal') # (nSet_y, nSet_x, nItemMax_x, nItemMax_y)
-    
-    
+
     def find_ranks(array, targets):
         valid_indices = np.where(~np.isnan(array))[0]
         valid_array = array.numpy()[valid_indices]
         sorted_indices = np.argsort(valid_array)[::-1]
         sorted_array = valid_array[sorted_indices]
-
+        
         if len(array.shape) ==1:
             for target in targets:
                 if math.isnan(target):
