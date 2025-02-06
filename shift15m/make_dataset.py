@@ -379,10 +379,10 @@ class DataGenerator:
         # max category
         self.max_category_size = len(np.unique(self.y_pretrain))
         
-        self.class_dict = {} # self.x_pretrainに紐づくインデックスを格納する辞書
-        self.classtoind_dict = {} # negative choosingで選ばれたインデックスからlabel_indicesのインデックスへ変換する際の辞書
+        self.class_dict = {} # アイテム特徴に紐づくインデックスを格納する辞書
+        self.classtoind_dict = {} # negative sampling で選ばれたインデックスからlabel_indicesのインデックスへ変換する際の辞書
         # cosine similarity calculation with Database
-        for label in range(len(np.unique(self.y_pretrain))):  # ラベル0～self.negative_item_numに対して処理
+        for label in range(len(np.unique(self.y_pretrain))):  
             # 該当ラベルの要素のインデックスを取得
             label_indices = np.where(self.y_pretrain == label)[0]
             
