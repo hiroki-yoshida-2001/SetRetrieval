@@ -85,7 +85,18 @@ class trainDataGenerator(tf.keras.utils.Sequence):
         self.category2_test_int = [[self.label_to_index[num] for num in sublist] for sublist in self.category2_test]
         self.category1_test_int = [[self.c1_label_to_index[num] for num in sublist] for sublist in self.category1_test]
 
+        '''
+        # random (gause distributed) projection
+        gause_noise = np.random.randn(4096, 128) # 保存対象
+        whitening_seed = np.matmul(self.x_pretrain, gause_noise) #計算用で保存する必要はなし
+        whitening_mean = np.mean(whitening_seed, axis=0)
+        whitening_std = np.std(whitening_seed, axis=0)
 
+        with open("whiteningdim128.pkl",'wb') as fp:
+            pickle.dump(gause_noise,fp)
+            pickle.dump(whitening_mean, fp)
+            pickle.dump(whitening_std, fp)
+        '''
 
     def __getitem__(self, index):
         if self.isMLP: 
@@ -124,7 +135,7 @@ class trainDataGenerator(tf.keras.utils.Sequence):
                 category_1_tmp = category_1
                 category_2_tmp = category_2
                 item_label_tmp = item_label
-                c2_int_tmp = self.category1_test_int
+                c2_int_tmp = self.category2_test_int
 
         # split x
         x_batch = []
@@ -238,8 +249,9 @@ class trainDataGenerator(tf.keras.utils.Sequence):
             x_train, y_train = self.pretrain_data_generation(np.concatenate(self.x_train, axis=0), np.concatenate(self.category2_train, axis=0), self.inds, -1)
             return x_train, y_train
         else:
-            x_train, x_size_train, y_train = self.data_generation(self.x_train, self.y_train, self.inds, -1)
-            return x_train, x_size_train, y_train
+            x_test, x_size_test, y_test, category1_test, category2_test, item_label_test, c2_test = self.data_generation(self.x_train[:7700], self.y_train[:7700], self.inds[:7700],  -1, category_1=self.category1_train[:7700], category_2=self.category2_train[:7700], item_label=self.item_label_train[:7700])
+            return x_test, x_size_test, y_test, category1_test, category2_test, item_label_test, c2_test
+
     
     def data_generation_test(self):
         
@@ -249,7 +261,7 @@ class trainDataGenerator(tf.keras.utils.Sequence):
     def __len__(self):
         # number of batches in one epoch
         batch_num = int(self.train_num/self.batch_size)
-
+        # self引数で閾値0.25とかを設定しておいて0.05ずつ増やすとかできそう
         return batch_num
 
     def on_epoch_end(self):
@@ -277,19 +289,21 @@ class testDataGenerator(tf.keras.utils.Sequence):
 class DataGenerator:
     def  __init__(self, year=2017, split=0, batch_size=20, max_item_num=5, max_data=np.inf, mlp_flag=False, use_all_pred=False):
         data_path =  "/data2/yoshida/mastermatching/data/forpack/pickles/2017-2017-split0" #f"pickle_data/{year}-{year}-split{split}"
+        
         self.max_item_num = max_item_num
         self.batch_size = batch_size
         self.isMLP = mlp_flag
         self.use_all_pred = use_all_pred
         
         # load train data
-        with open(f'{data_path}/train.pkl', 'rb') as fp:
+        with open(f'{data_path}/train2.pkl', 'rb') as fp:
             self.x_train = pickle.load(fp)
             self.y_train = pickle.load(fp)
 
             self.category1_train = pickle.load(fp)
             self.category2_train = pickle.load(fp)
             self.item_label_train = pickle.load(fp)
+            self.inds_db = pickle.load(fp)
 
         self.train_num = len(self.x_train)
 
@@ -298,23 +312,25 @@ class DataGenerator:
             self.train_num = max_data
 
         # load validation data
-        with open(f'{data_path}/valid.pkl', 'rb') as fp:
+        with open(f'{data_path}/valid2.pkl', 'rb') as fp:
             self.x_valid = pickle.load(fp)
             self.y_valid = pickle.load(fp)
 
             self.category1_valid = pickle.load(fp)
             self.category2_valid = pickle.load(fp)
             self.item_label_valid = pickle.load(fp)
+            self.inds_prevalid = pickle.load(fp)
         self.valid_num = len(self.x_valid)  
 
         # load test data
-        with open(f'{data_path}/test.pkl', 'rb') as fp:
+        with open(f'{data_path}/test2.pkl', 'rb') as fp:
             self.x_test = pickle.load(fp)
             self.y_test = pickle.load(fp)
 
             self.category1_test = pickle.load(fp)
             self.category2_test = pickle.load(fp)
             self.item_label_test = pickle.load(fp)
+            self.inds_pretest = pickle.load(fp)
         self.test_num = len(self.x_test)        
 
         # width and height of image
@@ -330,6 +346,10 @@ class DataGenerator:
         self.x_pretrain = np.concatenate(self.x_train, axis=0)
         self.y_pretrain = np.concatenate(self.category2_train, axis=0)
         self.y_pretrain_c1 = np.concatenate(self.category1_train, axis=0)
+
+        # negative gallery for validation
+        self.x_prevalid = np.concatenate(self.x_valid, axis=0)
+        self.y_prevalid = np.concatenate(self.category2_valid, axis=0)
 
         # c2 label encoding (only for train data) generatorで毎回呼ぶと時間がかかるため
         unique_labels, counts = np.unique(self.y_pretrain, return_counts=True)
@@ -350,8 +370,40 @@ class DataGenerator:
         self.y_pretrain = np.array([self.label_to_index[label] for label in self.y_pretrain])
         self.inds_pr = np.arange(len(self.y_pretrain))
         self.inds_pr_shuffle = np.random.permutation(self.inds_pr)
-        
+        self.y_prevalid_dash = np.array([self.label_to_index[label] for label in self.y_prevalid])
 
+        self.negative_item_num = 30
+        self.negative_item_num_valid = 60
+        self.negative_level = 1.00
+
+        # max category
+        self.max_category_size = len(np.unique(self.y_pretrain))
+        
+        self.class_dict = {} # self.x_pretrainに紐づくインデックスを格納する辞書
+        self.classtoind_dict = {} # negative choosingで選ばれたインデックスからlabel_indicesのインデックスへ変換する際の辞書
+        # cosine similarity calculation with Database
+        for label in range(len(np.unique(self.y_pretrain))):  # ラベル0～self.negative_item_numに対して処理
+            # 該当ラベルの要素のインデックスを取得
+            label_indices = np.where(self.y_pretrain == label)[0]
+            
+            category_dx = self.x_pretrain[label_indices]
+            l2_norms = np.linalg.norm(category_dx, axis=1, keepdims=True)  # Shape: (N(L), 1)
+
+            # Normalize each vector
+            normalized_vectors = category_dx / np.maximum(l2_norms, 1e-8)  # Prevent division by zero
+
+            # Step 2: コサイン類似度計算
+            # Compute the cosine similarity map using the dot product
+            cosine_similarity_map = np.matmul(normalized_vectors, normalized_vectors.T)  # Shape: (N(L), N(L))
+            sorted_indices = np.argsort(cosine_similarity_map, axis=1)
+
+            sorted_label = label_indices[sorted_indices]
+
+            self.class_dict[label] = sorted_label
+            self.classtoind_dict[label] = label_indices
+        # ------------------------------------------- 
+        
+        
     # -------------------------------------
     # 各要素の割合を計算, バッチ内データ加工のための関数
     def calculate_ratios(self, array_list):
@@ -411,22 +463,28 @@ class DataGenerator:
 
     def train_generator(self):
         np.random.shuffle(self.inds)
-        
+        if not self.negative_level < 0.05:
+            self.negative_level -= 0.05
         for index in range(0, len(self.inds), self.batch_size):
-            start_ind = index
 
+            start_ind = index
+            
             batch_inds = self.inds[start_ind:start_ind + self.batch_size]
             x_tmp = [self.x_train[i] for i in batch_inds]
             y_tmp = [self.y_train[i] for i in batch_inds]
+            inds_tmp = [self.inds_db[i] for i in batch_inds]
             if not self.use_all_pred:
                 category2_tmp = [np.array(self.category2_train_int[i]) for i in batch_inds]
                 category1_tmp = [np.array(self.category1_train_int[i]) for i in batch_inds]
             # xとyをスプリットし、パディングを適用
+            # negative_batch = []
             x_batch = []
             x_size_batch = []
             y_batch = []
             c_batch = []
             c1_batch = []
+            inds_batch = []
+            
             for ind in range(len(x_tmp)):
                 random_indices = np.random.permutation(len(x_tmp[ind]))
                 x_tmp_split = np.array_split(x_tmp[ind][random_indices], 2)
@@ -436,6 +494,16 @@ class DataGenerator:
                         ((0, max(0, self.max_item_num - len(x))), (0, 0)),  # パディングを適用
                         mode='constant'
                     ) for x in x_tmp_split
+                ]
+
+                # inds_split
+                inds_tmp_split = np.array_split(inds_tmp[ind][random_indices], 2)
+                inds_tmp_split_pad = [
+                    np.pad(
+                        x[:self.max_item_num],  # xの長さがmax_item_numを超える場合は切り捨て
+                        ((0, max(0, self.max_item_num - len(x))), ),  # パディングを適用
+                        mode='constant', constant_values=len(self.label_to_index)
+                    ) for x in inds_tmp_split
                 ]
                 if not self.use_all_pred:
                     c_tmp_split = np.array_split(category2_tmp[ind][random_indices], 2)
@@ -456,28 +524,94 @@ class DataGenerator:
                         ) for c in c1_tmp_split
                     ]
                 x_batch.append(x_tmp_split_pad)
-
+                inds_batch.append(inds_tmp_split_pad)
                 x_size_batch.append([min(len(split), self.max_item_num) for split in x_tmp_split])
                 y_batch.append(np.ones(2) * y_tmp[ind])
                 if not self.use_all_pred:
                     c_batch.append(c_tmp_split_pad)
                     c1_batch.append(c1_tmp_split_pad)
-            
             x_batch = np.vstack(x_batch)
             x_size_batch = np.hstack(x_size_batch)
             y_batch = np.hstack(y_batch)
+            
+            inds_batch = np.vstack(inds_batch)
+                    
 
             if not self.use_all_pred:
                 c_batch = np.vstack(c_batch)
                 c1_batch = np.vstack(c1_batch)
 
+            # index dict
+            '''label_to_index = {label: -1 for label in range(len(self.label_to_index))}
+            # Flatten the arrays and filter out padding labels
+            valid_labels = c_batch[c_batch != 41]
+            valid_indices = inds_batch[c_batch!= 41]'''
+
+            # Indexing and negative choosing
+            # each item negative sampling
+            selected_elements = []
+            for row_ind in range(c_batch.shape[0]):
+                tmp_elements = []
+                for col_ind in range(c_batch.shape[1]):
+                    label = c_batch[row_ind][col_ind]
+                    if label != self.max_category_size:
+                        selected_ind = np.where(self.classtoind_dict[label] == inds_batch[row_ind][col_ind])
+                        all_labeled_indices = self.class_dict[label][selected_ind][0]
+                        percentile_index = int(len(all_labeled_indices) * self.negative_level)
+                        # sampling_object = all_labeled_indices[:percentile_index]
+                        sampling_object = all_labeled_indices[::-1][:percentile_index]
+                        sample_size = min(self.negative_item_num, len(sampling_object))
+                        # Select random elements
+                        negative_sample_indices = np.random.choice(sampling_object, size=sample_size, replace=False)
+                        # ----------------------------------------
+                        # negative_sample_indices = self.class_dict[label][selected_ind][0][: self.negative_item_num]
+                        if len(negative_sample_indices) < self.negative_item_num :
+                            initial_value = self.class_dict[label][selected_ind][0][: self.negative_item_num][0]
+        
+                            # Calculate the number of elements to add
+                            padding_length = self.negative_item_num - len(negative_sample_indices)
+                            
+                            negative_sample_indices = np.append(negative_sample_indices, [initial_value] * padding_length)
+                    else:# galleryで使われないラベル
+                        negative_sample_indices = self.class_dict[0][0][ : self.negative_item_num]
+                        if len(negative_sample_indices) < self.negative_item_num :
+                            initial_value = negative_sample_indices[0]
+        
+                            # Calculate the number of elements to add
+                            padding_length = self.negative_item_num - len(negative_sample_indices)
+                            
+                            negative_sample_indices = np.append(negative_sample_indices, [initial_value] * padding_length)
+                    tmp_elements.append(self.x_pretrain[negative_sample_indices])
+                selected_elements.append(tmp_elements)
             
+            negative_gallery = np.array(selected_elements)
             if not self.use_all_pred:
-                yield (x_batch, x_size_batch, c_batch, c1_batch), y_batch
+                yield (x_batch, x_size_batch, c_batch, c1_batch, negative_gallery), y_batch
             else:
                 yield (x_batch, x_size_batch), y_batch
     def validation_generator(self):
+
         for index in range(0, len(self.inds_vr), self.batch_size):
+            selected_elements = []
+            for label in range(self.max_category_size):  # ラベル0～self.negative_item_numに対して処理
+                # 該当ラベルの要素のインデックスを取得
+                label_indices = np.where(self.y_prevalid_dash == label)[0]
+                if label_indices.size != 0:
+                    # シャッフルしてランダムに抽出
+                    np.random.shuffle(label_indices)
+                    selected = label_indices[:self.negative_item_num]
+                    
+                    # 足りない場合は-1で埋める
+                    if len(selected) < self.negative_item_num:
+                        selected = np.pad(selected, (0, self.negative_item_num - len(selected)), constant_values=-1)
+                    
+                    # 選択した要素をリストに追加
+                    selected_elements.append(self.x_prevalid[selected])
+                else: # valid にはないカテゴリの処理
+                    selected_elements.append(np.zeros((self.negative_item_num,self.dim)))
+
+            # 結果をテンソルに変換（形状: (self.max_category_size(41), self.negative_item_num, self.dim(4096))）
+            negative_gallery = np.stack(selected_elements)
             start_ind = index
 
             batch_inds = self.inds_vr[start_ind:start_ind + self.batch_size]
@@ -540,7 +674,7 @@ class DataGenerator:
 
             
             if not self.use_all_pred:
-                yield (x_batch, x_size_batch, c_batch, c1_batch), y_batch
+                yield (x_batch, x_size_batch, c_batch, c1_batch, negative_gallery), y_batch
             else:
                 yield (x_batch, x_size_batch), y_batch
 
@@ -557,8 +691,8 @@ class DataGenerator:
         else:
             return tf.data.Dataset.from_generator(
                 self.train_generator,
-                    output_types=((tf.float64, tf.float32, tf.int64, tf.int64), tf.float64),
-                    output_shapes=((tf.TensorShape([None, self.max_item_num, self.dim]), tf.TensorShape([None,]), tf.TensorShape([None, self.max_item_num]), tf.TensorShape([None, self.max_item_num])), tf.TensorShape([None,]))
+                    output_types=((tf.float64, tf.float32, tf.int64, tf.int64, tf.float64), tf.float64),
+                    output_shapes=((tf.TensorShape([None, self.max_item_num, self.dim]), tf.TensorShape([None,]), tf.TensorShape([None, self.max_item_num]), tf.TensorShape([None, self.max_item_num]), tf.TensorShape([None, self.max_item_num, self.negative_item_num, self.dim])), tf.TensorShape([None,])) # tf.TensorShape([41, self.negative_item_num, self.dim])) : negative shape old ver
                     
             )
         
@@ -574,7 +708,16 @@ class DataGenerator:
         else:
             return tf.data.Dataset.from_generator(
                 self.validation_generator,
-                output_types=((tf.float64, tf.float32, tf.int64, tf.int64), tf.float64),
-                output_shapes=((tf.TensorShape([None, self.max_item_num, self.dim]), tf.TensorShape([None,]), tf.TensorShape([None, self.max_item_num]), tf.TensorShape([None, self.max_item_num])), tf.TensorShape([None,]))
+                output_types=((tf.float64, tf.float32, tf.int64, tf.int64, tf.float64), tf.float64),
+                output_shapes=((tf.TensorShape([None, self.max_item_num, self.dim]), tf.TensorShape([None,]), tf.TensorShape([None, self.max_item_num]), tf.TensorShape([None, self.max_item_num]), tf.TensorShape([41, self.negative_item_num, self.dim])), tf.TensorShape([None,]))
                     
             )
+'''
+# generate lineared vector and whitening step
+year = 2017
+max_item_num = 5
+batch_size = 100
+pdb.set_trace()
+test_generator = trainDataGenerator(year = year, batch_size = batch_size, max_item_num = max_item_num)
+x_test, x_size_test, y_test, category1_test, category2_test, item_label_test, c2_test = test_generator.data_generation_train()
+'''
