@@ -23,10 +23,10 @@ def calc_set_sim_name(calc_set_sim):
     return calc_set_sim_name[calc_set_sim]
 #----------------------------
 
-def cos_sim_method(cos_sim_loss):
-    method_name = ['CE','Hinge', 'DFA']
+def gallery_type(gallery_type):
+    method_name = ['InBatch','OutBatch']
 
-    return method_name[cos_sim_loss]
+    return method_name[gallery_type]
 
 #----------------------------
 def style_method(style_loss):
@@ -50,7 +50,7 @@ def parser_run():
     parser.add_argument('-pretrained_mlp', type=int, default=1, help='Whether pretrain MLP (not use FC_projection)')
     parser.add_argument('-mlp_projection_dim', type=int, default=128, help='MLP hidden last layer projects to the dimension')
     parser.add_argument('-is_Cvec_linear', type=int, default=1, help='Whether learn FC_projection for Cluster seed vec')
-    parser.add_argument('-use_all_pred', type=int, default=0, help='0: set_to_item retrieval, 1: set_to_set retrieval')
+    parser.add_argument('-set_loss', type=int, default=0, help='0: set_to_item retrieval, 1: set_to_set retrieval (use CSscore or BERTscore)')
     # dataset 
     parser.add_argument('-tf_data', type=int, default=0, help='0: numpy, 1: tf.data')
     parser.add_argument('-label_ver', type=int, default=1, help='0: use c2_label, 1: use c1_label')
@@ -58,7 +58,7 @@ def parser_run():
     parser.add_argument('-category_emb', type=int, default=0, help='0: no category_emb, 1: implement category_emb')
 
     # loss related
-    parser.add_argument('-cos_sim_loss', type=int, default=1, help='0: use "CE" loss, 1: use "hinge" loss, 2: use DFA loss')
+    parser.add_argument('-gallerytype', type=int, default=1, help='0: use in batch negative , 1: use out batch negative')
     parser.add_argument('-style_loss', type=int, default=1, help='0 not use style loss,  1:use style loss , 2: use style loss but with DFA')
 
     return parser
@@ -244,12 +244,13 @@ def swap_query_positive(array):
     swapped_indices = tf.reshape(tf.stack([indices[1::2], indices[::2]], axis=-1), [-1])
 
     return swapped_indices
+# In Batch negative loss (zozo + alpha) 
 def Set_item_Cross_entropy(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
     
     y_true = create_true_index(labels.shape[0])
-    set_size = tf.reduce_sum(tf.cast(labels != 41, tf.float32), axis=1)
+    set_size = tf.reduce_sum(tf.cast(labels != tf.reduce_max(labels), tf.float32), axis=1)
     pred_set_size = tf.gather(set_size, tf.where(tf.equal(y_true,1))[:,1])
-    negative_sampling = "max"
+    negative_sampling = "mean"
     # -------------------------------------
     
     batch_loss = []
@@ -258,7 +259,7 @@ def Set_item_Cross_entropy(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
         item_loss = []
         for item_ind in range(labels.shape[1]):
             target_label = labels[tf.where(tf.equal(y_true,1))[:,1][batch_ind]][item_ind] # 予測カテゴリの取得
-            if target_label == 41:# 0パディングの時
+            if target_label == tf.reduce_max(labels):# 0パディングの時
                 item_loss.append(0)
             else:
                 positive_score = cos_sim[batch_ind, :, item_ind, item_ind][tf.where(y_true==1)[:,1][batch_ind]]
@@ -280,15 +281,13 @@ def Set_item_Cross_entropy(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
                     negative_mask = 1.0 - label
                     negative_scores = pred_scores * negative_mask
 
-                    negative_scores = tf.boolean_mask(negative_scores, tf.reshape(padding_mask,-1))
+                    negative_scores = negative_scores * tf.reshape(padding_mask,-1)
 
                     if negative_sampling == "max":
                         negative_scores = tf.reduce_max(negative_scores)
                     elif negative_sampling == "top5":
-                        if len(negative_scores) <= 5:
-                            negative_scores = tf.reduce_mean(negative_scores)
-                        else:
-                            negative_scores = tf.reduce_mean(tf.math.top_k(negative_scores, k=5).values)
+                        if len(negative_scores) > 5:
+                            negative_scores = tf.math.top_k(negative_scores, k=5).values
                     
                     # Calculate exponential scores for negative normalization: (Batch, N, Batch)
                     exp_negative_scores = tf.exp(negative_scores)
@@ -298,7 +297,7 @@ def Set_item_Cross_entropy(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
                     exp_positive_scores = tf.exp(positive_scores)
                     
                     # Denominator includes positive and all negative scores: (Batch, N)
-                    denom = exp_negative_scores + exp_positive_scores
+                    denom = tf.reduce_mean(exp_negative_scores) + exp_positive_scores
                     
                     # Contrastive loss for each item: (Batch, N)
                     entropy_loss = -tf.math.log(exp_positive_scores / denom)
@@ -321,27 +320,33 @@ def Set_item_Cross_entropy(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
                     
                     # Mask out positive positions for negatives: (Batch, N, Batch)
                     negative_mask = 1.0 - label
-                    negative_scores = tf.boolean_mask(pred_scores,negative_mask)
+                    negative_scores = pred_scores * negative_mask
 
                     if negative_sampling == "max":
                         negative_scores = tf.reduce_max(negative_scores)
                     elif negative_sampling == "top5":
-                        if len(negative_scores) <= 5:
-                            negative_scores = tf.reduce_mean(negative_scores)
-                        else:
-                            negative_scores = tf.reduce_mean(tf.math.top_k(negative_scores, k=5).values)
+                        if len(negative_scores) > 5:
+                            negative_scores = tf.math.top_k(negative_scores, k=5).values
                     
                     # Calculate exponential scores for negative normalization: (Batch, N, Batch)
                     exp_negative_scores = tf.exp(negative_scores)
                     exp_positive_scores = tf.exp(positive_scores)
                     
                     # Denominator includes positive and all negative scores: (Batch, N)
-                    denom = exp_negative_scores + exp_positive_scores
+                    denom = tf.reduce_mean(exp_negative_scores) + exp_positive_scores
                     
                     # Contrastive loss for each item: (Batch, N)
                     entropy_loss = -tf.math.log(exp_positive_scores / denom)
                     # entropy_loss = bce(label, pred_scores)
                     item_loss.append(entropy_loss)
+                    # print("positive_loss=")
+                    # print(positive_score)
+                    # print("item_loss=")
+                    # print(entropy_loss)
+                    if tf.math.is_nan(positive_score):
+                        pdb.set_trace()
+                    
+
              
         batch_loss.append(sum(item_loss) / pred_set_size[batch_ind])
 
@@ -349,6 +354,52 @@ def Set_item_Cross_entropy(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
     
     return Loss
 
+def random_negative_CLIPLoss(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
+    
+    y_true = create_true_index(labels.shape[0])
+    set_size = tf.reduce_sum(tf.cast(labels != tf.reduce_max(labels), tf.float32), axis=1)
+    pred_set_size = tf.gather(set_size, tf.where(tf.equal(y_true,1))[:,1])
+    batch_size, item_size, score_size = cos_sim.shape
+    threshold_alpha = 0.30
+
+    # One-hotラベルを計算するためのマスク作成
+    range_items = tf.range(item_size, dtype=tf.float32)  # (nItemMax,)
+    item_mask = tf.expand_dims(pred_set_size, axis=1) > range_items  # Shape: (Batch, nItemMax)
+    # cos_sim : (Batch, nItemMax, nPositive + nNegativeMax, D)
+    # Positiveスコア: 各アイテム方向の最初の要素
+    positive_scores = cos_sim[:, :, 0]  # Shape: (Batch, nItemMax)
+    
+    # Negativeスコア: 残りの部分
+    negative_scores = cos_sim[:, :, 1:]  # Shape: (Batch, nItemMax, nNegativeMax)
+    
+    # Positiveスコアの指数
+    positive_exp = tf.exp(positive_scores)  # Shape: (Batch, nItemMax)
+    
+    # Negativeスコアの指数
+    negative_exp = tf.exp(negative_scores) # Shape: (Batch, nItemMax, nNegativeMax)
+
+    # expPositiveとexpNegativeスコアの差を計算
+    score_diff = tf.expand_dims(positive_exp, axis=2) - negative_exp
+    # スコア差がξ未満の箇所を残すマスク
+    mask = tf.cast(score_diff < (tf.expand_dims(positive_exp,axis=-1) * threshold_alpha), tf.float32) # Shape: (Batch, item_size, nNegativeMax)
+    masked_negative_exp = negative_exp * mask  # Masked Negative scores
+    # Negativeスコアの指数の和
+    negative_exp_sum = tf.reduce_sum(masked_negative_exp, axis=2)  # Shape: (Batch, nItemMax)
+
+    # 分母: positive + negatives
+    denom = positive_exp + negative_exp_sum  # Shape: (Batch, nItemMax)
+
+    # 損失計算: 各アイテム方向
+    log_prob_positive = tf.math.log(positive_exp / denom)  # Shape: (Batch, nItemMax)
+    item_loss = -log_prob_positive  # Shape: (Batch, nItemMax)
+
+    # 必要なアイテムだけ計算 (予測サイズ以上はマスク処理)
+    masked_item_loss = item_loss * tf.cast(item_mask, tf.float32)  # Shape: (Batch, nItemMax)
+
+    # アイテム方向の平均
+    batch_loss = tf.reduce_sum(masked_item_loss, axis=1) / tf.maximum(pred_set_size, 1.0)  # Shape: (Batch,)
+    
+    return batch_loss
 def Category_accuracy(pred_labels, true_labels):
     # まず、41を無視したマスクを作成
     mask = tf.not_equal(true_labels, 41)  # 41でない部分がTrue
@@ -385,59 +436,73 @@ def Set_accuracy(score, y_true):
 
     return accuracy
 
-# # sparse representation in PIFR
-def compute_representation_weights(self, x, y, nItem, mode='l1', transform_algorithm='lasso_lars', transform_alpha=1):
-    from sklearn.decomposition import SparseCoder
-    from joblib import Parallel, delayed
-
-    def compute_sparse_weight(X, Y, nItem_x, nItem_y, nItemMax, transform_algorithm, transform_alpha):
-        coder = SparseCoder(dictionary=Y, transform_algorithm=transform_algorithm, transform_alpha=transform_alpha/nItem_y)
-        weight = coder.transform(X)
-
-        return weight
-
-    def compute_collaborative_weight(X, Y, nItem_x, nItem_y, nItemMax, transform_alpha):
-        nItem_x = np.min([nItem_x,nItemMax])
-        nItem_y = np.min([nItem_y,nItemMax])
-
-        X = X[:nItem_x]
-        Y = Y[:nItem_y]
-
-        term1 = np.matmul(X,np.transpose(Y))
-        term2 = np.linalg.inv(np.matmul(Y,np.transpose(Y)) + transform_alpha/nItem_y * np.eye(nItem_y,nItem_y))
-        weight = np.matmul(term1,term2)
-
-        if nItem_y < nItemMax:
-            weight = np.hstack([weight,np.zeros([nItem_x,nItemMax-nItem_y])])
-
-        if nItem_x < nItemMax:
-            weight = np.vstack([weight,np.zeros([nItemMax-nItem_x,nItemMax])])
-
-        return weight
-
-
-    try:
-        x = x.numpy()
-        nItem = nItem.numpy()
-        nSet_x = x.shape[0]
-        nSet_y = x.shape[1]
-        nItemMax = x.shape[2]
-
-        if mode == 'l1':
-            weights = Parallel(n_jobs=-1)(delayed(compute_sparse_weight)(x[i,j], x[j,i], int(nItem[i]), int(nItem[j]), nItemMax, transform_algorithm, transform_alpha) for i in range(nSet_x) for j in range(nSet_y))
-        elif mode == 'l2':
-            #weights = compute_collaborative_weight(x[0,1],x[1,0], int(nItem[0]), int(nItem[1]), nItemMax, transform_alpha)
-            weights = Parallel(n_jobs=-1)(delayed(compute_collaborative_weight)(x[i,j], x[j,i], int(nItem[i]), int(nItem[j]),  nItemMax, transform_alpha) for i in range(nSet_x) for j in range(nSet_y))
-
-        weights = np.stack(weights).reshape(nSet_x,nSet_y,nItemMax,nItemMax)
-
-    except:
-        pdb.set_trace()
-
-    return tf.convert_to_tensor(weights,dtype=tf.float32)
-
 def matching_accuracy(y_true, y_pred):
     return tf.reduce_mean(y_pred)
+
+def Retrieval_acc(scores, needed_items):
+    """
+    Calculate accuracy based on whether the positive score is within the top 3 scores.
+
+    Args:
+        scores: Tensor of shape (Batch, Items, Scores), representing score arrays.
+        needed_items: Tensor of shape (Batch,), indicating the number of valid items for each batch.
+
+    Returns:
+        accuracy: Scalar tensor representing the mean accuracy across the batch.
+    """
+    
+    '''# Step 1: Extract positive scores (first score in each row of items)
+    positive_scores = scores[:, :, 0]  # Shape: (Batch, Items)
+
+    # Step 2: Sort scores along the last axis in descending order
+    sorted_scores = tf.sort(scores, axis=2, direction="DESCENDING")  # Shape: (Batch, Items, Scores)
+
+    # Step 3: Find the rank of positive scores among the top 3 scores
+    top_3_scores = sorted_scores[:, :, :3]  # Top 3 scores: Shape (Batch, Items, 3)
+    positive_in_top_3 = tf.reduce_any(
+        tf.expand_dims(positive_scores, axis=2) == top_3_scores, axis=2
+    )  # Shape: (Batch, Items), True where positive score is in top 3
+
+    # Step 4: Apply mask using needed_items to exclude invalid items
+    mask = tf.sequence_mask(needed_items, maxlen=tf.shape(scores)[1])  # Shape: (Batch, Items)
+    valid_accuracies = tf.cast(positive_in_top_3, tf.float32) * tf.cast(mask, tf.float32)  # Mask invalid items
+
+    # Step 5: Calculate mean accuracy per batch (ignoring invalid items)
+    batch_accuracies = tf.reduce_sum(valid_accuracies, axis=1) / tf.maximum(
+        tf.cast(needed_items, tf.float32), 1.0
+    )  # Prevent division by zero
+
+    # Step 6: Calculate the overall accuracy across all batches
+    overall_accuracy = tf.reduce_mean(batch_accuracies)  # Scalar
+    '''
+
+    # Step 1: Extract positive scores (first score in each row of items)
+    positive_scores = scores[:, :, 0]  # Shape: (Batch, Items)
+
+    # Step 2: Sort scores along the last axis in descending order
+    sorted_scores = tf.sort(scores, axis=2, direction="DESCENDING")  # Shape: (Batch, Items, Scores)
+
+    # Step 3: Determine the ranks of positive scores
+    # Compare positive scores to the sorted scores to determine their ranks
+    is_positive_rank = tf.cast(
+        tf.expand_dims(positive_scores, axis=2) == sorted_scores, tf.float32
+    )  # Shape: (Batch, Items, Scores), 1 where scores match
+    ranks = tf.reduce_sum(is_positive_rank * tf.range(1, tf.shape(scores)[2] + 1, dtype=tf.float32), axis=2)  
+    # Shape: (Batch, Items), rank for each positive score (1-based)
+
+    # Step 4: Apply mask using needed_items to exclude invalid items
+    mask = tf.sequence_mask(needed_items, maxlen=tf.shape(scores)[1])  # Shape: (Batch, Items)
+    valid_ranks = ranks * tf.cast(mask, tf.float32)  # Mask invalid items
+
+    # Step 5: Calculate mean rank per batch (ignoring invalid items)
+    batch_mean_ranks = tf.reduce_sum(valid_ranks, axis=1) / tf.maximum(
+        tf.cast(needed_items, tf.float32), 1.0
+    )  # Prevent division by zero 
+
+    # Step 6: Calculate the overall average rank across all batches
+    overall_average_rank = tf.reduce_mean(batch_mean_ranks)  # Scalar
+
+    return overall_average_rank
 #----------------------------
 # convert class labels to cross-set label（if the class-labels are same, 1, otherwise 0)
 def cross_set_label(y):
@@ -514,7 +579,7 @@ def compute_test_rank(gallery, pred, set_label, category):
     for batch_ind in range(len(cos_sim)):
         rank = []
         for item_ind in range(nItemPred):
-            if category[tf.where(tf.equal(y_true[batch_ind], 1))[0][0].numpy()][item_ind] != 0:
+            if category[tf.where(tf.equal(y_true[batch_ind], 1))[0][0].numpy()][item_ind] != 11:
                 indices = tf.where(category == category[tf.where(tf.equal(y_true[batch_ind], 1))[0][0].numpy()][item_ind])
                 if len(indices[:,0]) == 1:
                     rank.append(1)
@@ -533,83 +598,3 @@ def compute_test_rank(gallery, pred, set_label, category):
     
     return ranks
 #----------------------------   
-
-# 先生からもらったコード
-#---------------------
-'''
-# sparse representation in PIFR
-def compute_representation_weights(self, x, nItem, mode='l1', transform_algorithm='lasso_lars', transform_alpha=1):
-    from sklearn.decomposition import SparseCoder
-    from joblib import Parallel, delayed
-
-    def compute_sparse_weight(X, Y, nItem_x, nItem_y, nItemMax, transform_algorithm, transform_alpha):
-        coder = SparseCoder(dictionary=Y, transform_algorithm=transform_algorithm, transform_alpha=transform_alpha/nItem_y)
-        weight = coder.transform(X)
-
-        return weight
-
-    def compute_collaborative_weight(X, Y, nItem_x, nItem_y, nItemMax, transform_alpha):
-        nItem_x = np.min([nItem_x,nItemMax])
-        nItem_y = np.min([nItem_y,nItemMax])
-
-        X = X[:nItem_x]
-        Y = Y[:nItem_y]
-
-        term1 = np.matmul(X,np.transpose(Y))
-        term2 = np.linalg.inv(np.matmul(Y,np.transpose(Y)) + transform_alpha/nItem_y * np.eye(nItem_y,nItem_y))
-        weight = np.matmul(term1,term2)
-
-        if nItem_y < nItemMax:
-            weight = np.hstack([weight,np.zeros([nItem_x,nItemMax-nItem_y])])
-
-        if nItem_x < nItemMax:
-            weight = np.vstack([weight,np.zeros([nItemMax-nItem_x,nItemMax])])
-
-        return weight
-
-
-    try:
-        x = x.numpy()
-        nItem = nItem.numpy()
-        nSet_x = x.shape[0]
-        nSet_y = x.shape[1]
-        nItemMax = x.shape[2]
-
-        if mode == 'l1':
-            weights = Parallel(n_jobs=-1)(delayed(compute_sparse_weight)(x[i,j], x[j,i], int(nItem[i]), int(nItem[j]), nItemMax, transform_algorithm, transform_alpha) for i in range(nSet_x) for j in range(nSet_y))
-        elif mode == 'l2':
-            #weights = compute_collaborative_weight(x[0,1],x[1,0], int(nItem[0]), int(nItem[1]), nItemMax, transform_alpha)
-            weights = Parallel(n_jobs=-1)(delayed(compute_collaborative_weight)(x[i,j], x[j,i], int(nItem[i]), int(nItem[j]),  nItemMax, transform_alpha) for i in range(nSet_x) for j in range(nSet_y))
-
-        weights = np.stack(weights).reshape(nSet_x,nSet_y,nItemMax,nItemMax)
-
-    except:
-        pdb.set_trace()
-
-    return tf.convert_to_tensor(weights,dtype=tf.float32)
-#---------------------
-def PIFR_usecase():
-    if score_mode=='PIFR': # sparse representation
-        nSet_x = tf.shape(x)[0]
-        nSet_y = tf.shape(x)[1]
-
-        x_norm = tf.linalg.norm(x,axis=3,keepdims=1)
-        weights = compute_representation_weights(x/tf.where(x_norm==0,1,x_norm),x_size)
-
-        score = tf.stack([[tf.norm(tf.linalg.matmul(weights[i,j],x[j,i]) - x[i,j])/x_size[i] for i in range(nSet_x)] for j in range(nSet_y)])
-        score = tf.expand_dims(score,-1)
-        x_rep = []
-
-    elif score_mode=='PIFR2': # collaborative representation
-        nSet_x = tf.shape(x)[0]
-        nSet_y = tf.shape(x)[1]
-
-        x_norm = tf.linalg.norm(x,axis=3,keepdims=1)
-        weights =compute_representation_weights(x/tf.where(x_norm==0,1,x_norm),x_size,mode='l2')
-
-        score = tf.stack([[tf.norm(tf.linalg.matmul(weights[i,j],x[j,i]) - x[i,j])/x_size[i] for i in range(nSet_x)] for j in range(nSet_y)])
-        score = tf.expand_dims(score,-1)
-        x_rep = []
-        
-    return 0
-'''
