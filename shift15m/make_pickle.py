@@ -23,7 +23,7 @@ def get_labels(
 ) -> Tuple[List, List, List]:
     
     # train.json, valid.json, test.jsonがあるディレクトリ
-    label_dir = "!data/!"
+    label_dir = "/data2/yoshida/mastermatching/data/"
     train, valid, test = get_trainvaltest_data(label_dir)
     
 
@@ -41,7 +41,7 @@ def save_pickles(
     year: Union[str, int], split: int, data_root: str, mode: str, label: List,
 ):
     # SHIFT15Mの outfit features.gzがあるディレクトリ
-    feature_dir = "!dataset/features!"
+    feature_dir = "/data2/nakamura/Datasets/zozo-shift15m/data/features"
     folder_name = f"{year}-{year}-split{split}/{mode}"
     output_dir = pathlib.Path(data_root) / "journal" / "pickles" / folder_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -126,25 +126,48 @@ def save_pickles(
 #-------------------------------
 # gather and save pickle data
 # train.pkl, valid.pkl, test.pklを作成する
-def make_packed_pickle(files, save_path):
+# gather and save pickle data
+def make_packed_pickle(files, save_path): # item labels, category_id1.2の追加によりpicklesファイルの仕様が変わりました。そのため修正します。
     X = []
     Y = []
+    category_id1s = []
+    category_id2s = []
+    item_labels = []
+    inds = []
+    start_ind = 0
     for file in files:
         with open(file, 'rb') as f:
             try:
+                # pkl => (features, category_id1, category_id2, item_label)
                 x = np.array(pickle.load(f))
+                category_id1 = pickle.load(f)
+                category_id2 = pickle.load(f)
+                item_label = pickle.load(f)
+
+                # x = np.array(pickle.load(f))
             except:
                 pass
                 #print(f"{os.path.basename(file)}: empty")
             else:
-                #print(f"{os.path.basename(file)}: {x.shape}")
                 X.append(x)
                 Y.append(int(os.path.basename(file).split('.')[0]))
+                category_id1s.append(category_id1)
+                category_id2s.append(category_id2)
+                item_labels.append(item_label)
+                inds.append(np.arange(start_ind, len(x) + start_ind))
+                start_ind += len(x)
+                #print(f"{os.path.basename(file)}: {x.shape}")
+                # X.append(x)
+                # Y.append(int(os.path.basename(file).split('.')[0]))
 
     print(f"save to {save_path}")
     with open(save_path,'wb') as f:
         pickle.dump(X,f)
         pickle.dump(Y,f)
+        pickle.dump(category_id1s,f)
+        pickle.dump(category_id2s,f)
+        pickle.dump(item_labels,f)
+        pickle.dump(inds, f)
 #-------------------------------
 
 
