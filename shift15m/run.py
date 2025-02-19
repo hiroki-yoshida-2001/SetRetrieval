@@ -103,6 +103,7 @@ modelPath = experimentPath
 if args.is_set_norm:
     modelPath += f'_setnorm'
 
+modelPath = os.path.join(modelPath, f"negativesch{args.negative_scheduling}")
 modelPath = os.path.join(modelPath, f"batch_size{batch_size}")
 modelPath = os.path.join(modelPath,f"year{year}")
 modelPath = os.path.join(modelPath,f"max_item_num{max_item_num}")
@@ -193,6 +194,10 @@ whitening_path = "Shift15Mgausenoise.pkl"
 #         #x_valid, x_size_valid, y_valid = train_generator.data_generation_val()
 #         x_valid, x_size_valid, y_valid, category1_valid, category2_valid, item_label_valid, c2_valid = train_generator.data_generation_val()
 
+train_generator = data.DataGenerator(year=year, batch_size=batch_size, max_item_num=max_item_num, set_loss=False, whitening_path=not os.path.exists(whitening_path))
+train_data_set = train_generator.get_train_dataset()
+validation_data_set = train_generator.get_validation_dataset()
+
 # set-matching model net 
 # ------------------------
 # # SetMatchingModelの定義と学習
@@ -210,11 +215,10 @@ set_matching_model = SMscore_model.SetMatchingModel(
     cnn_class_num=2,                 # CNNの分類クラス数（デフォルト: 2）
     max_channel_ratio=2,             # チャンネル倍率
     is_neg_down_sample=True, # ネガティブサンプルのダウンサンプリングを使用するかどうか
-    Whitening_path=whitening_path
+    Whitening_path=whitening_path,
+    pretrain = True
 )
-train_generator = data.DataGenerator(year=year, batch_size=batch_size, max_item_num=max_item_num, set_loss=False, whitening_path=not os.path.exists(whitening_path))
-train_data_set = train_generator.get_train_dataset()
-validation_data_set = train_generator.get_validation_dataset()
+
 # マッチングモデル学習
 if args.train_matching:
     SetMatching_model_path = f"{experimentPath}_TrainScore"
@@ -253,9 +257,9 @@ if not os.path.exists(result_path):
 
     # setting training, loss, metric to model
     if gallerytype == 'InBatch': # zozo + alpha loss
-        model_smn.compile(optimizer="adam", loss=util.Set_item_Cross_entropy, metrics=util.Retrieval_acc, run_eagerly=True)
+        model_smn.compile(optimizer="adam", loss=util.InBatchCLIPLoss, metrics=util.Retrieval_acc, run_eagerly=True)
     else: # proposed loss 
-        model_smn.compile(optimizer="adam", loss=util.random_negative_CLIPLoss, metrics=util.Retrieval_acc, run_eagerly=True)
+        model_smn.compile(optimizer="adam", loss=util.OutBatchCLIPLoss, metrics=util.Retrieval_acc, run_eagerly=True)
     # execute training
     train_data_set = train_data_set.prefetch(1)
     validation_data_set = validation_data_set.prefetch(1)

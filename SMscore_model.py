@@ -4,6 +4,7 @@ import numpy as np
 import sys
 import gc
 import pdb
+import pickle
 
 #----------------------------
 # multi-head CS function to make cros-set matching score map
@@ -283,7 +284,7 @@ class CNN(tf.keras.Model):
 #----------------------------
 
 class SetMatchingModel(tf.keras.Model):
-    def __init__(self, isCNN=False, is_TrainableMLP=True, is_set_norm=False, is_cross_norm=True, is_final_linear=True, num_layers=1, num_heads=2, mode='setRepVec_pivot', baseChn=64, baseMlp=512, rep_vec_num=1, seed_init = 0, cnn_class_num=2, max_channel_ratio=2, is_neg_down_sample=False):
+    def __init__(self, isCNN=False, is_set_norm=False, is_cross_norm=True, is_final_linear=True, num_layers=1, num_heads=2, mode='setRepVec_pivot', baseChn=64, rep_vec_num=1, seed_init = 0, cnn_class_num=2, max_channel_ratio=2, is_neg_down_sample=False, Whitening_path=None, pretrain=False):
         super(SetMatchingModel, self).__init__()
         self.isCNN = isCNN
         self.num_layers = num_layers
@@ -292,9 +293,9 @@ class SetMatchingModel(tf.keras.Model):
         self.baseChn = baseChn
         self.is_final_linear = is_final_linear
         self.is_neg_down_sample = is_neg_down_sample
-        self.baseMlp = baseMlp
         self.seed_init = seed_init
-        self.isTrainableMLP = is_TrainableMLP
+        self.whitening_path = Whitening_path
+        self.pretrain = pretrain
 
         if self.seed_init != 0:
             self.dim_shift15 = len(self.seed_init[0])
@@ -307,7 +308,7 @@ class SetMatchingModel(tf.keras.Model):
         
         #---------------------
         # encoder
-        self.set_emb = self.add_weight(name='set_emb',shape=(1,1,self.rep_vec_num,baseChn*max_channel_ratio),trainable=True)
+        self.set_emb = self.add_weight(name='set_matching_model',shape=(1,1,self.rep_vec_num,baseChn*max_channel_ratio),trainable=True)
         self.self_attentions = [set_attention(head_size=baseChn*max_channel_ratio, num_heads=num_heads, self_attention=True) for i in range(num_layers)]
         self.layer_norms_enc1 = [layer_normalization(size_d=baseChn*max_channel_ratio, is_set_norm=is_set_norm) for i in range(num_layers)]
         self.layer_norms_enc2 = [layer_normalization(size_d=baseChn*max_channel_ratio, is_set_norm=is_set_norm) for i in range(num_layers)]
@@ -332,6 +333,11 @@ class SetMatchingModel(tf.keras.Model):
 
         self.MLP = []
         
+        # whitening path load
+        with open(self.whitening_path, 'rb') as fp:
+            self.gause_noise = pickle.load(fp)
+            self.whitening_mean = pickle.load(fp)
+            self.whitening_std = pickle.load(fp)
         #---------------------
 
     # compute score of set-pair using dot product
@@ -354,6 +360,9 @@ class SetMatchingModel(tf.keras.Model):
         # CNN
         if self.isCNN:
             x, predCNN = self.CNN((x,x_size),training=False)
+        
+        if self.pretrain:
+            x = tf.matmul(x, tf.cast(self.gause_noise, tf.float32))
         predCNN = []
     
 
@@ -519,8 +528,10 @@ class SetMatchingModel(tf.keras.Model):
 
     # train step
     def train_step(self,data):
+        
         x, y_true = data
-        x, x_size, c_label, c1_label = x
+        # x, x_size, c_label, c1_label = x # shift15m
+        x, x_size, c_label, _ = x
         with tf.GradientTape() as tape:
             # predict
             predCNN, predSMN, debug = self((x, x_size), training=True)
@@ -565,7 +576,8 @@ class SetMatchingModel(tf.keras.Model):
     # test step
     def test_step(self, data):
         x, y_true = data
-        x, x_size, c_label, c1_label = x
+        # x, x_size, c_label, c1_label = x # shift15m
+        x, x_size, c_label, _ = x
 
         # predict
         predCNN, predSMN, debug = self((x, x_size), training=False)

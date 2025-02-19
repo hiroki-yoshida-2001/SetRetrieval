@@ -54,7 +54,7 @@ def parser_run():
     # dataset 
     parser.add_argument('-tf_data', type=int, default=0, help='0: numpy, 1: tf.data')
     parser.add_argument('-label_ver', type=int, default=1, help='0: use c2_label, 1: use c1_label')
-    
+    parser.add_argument('-negative_scheduling', type=int, default=0, help='0: no scheduling negative level is fixed, 1: negative level is increased by epoch')
     parser.add_argument('-category_emb', type=int, default=0, help='0: no category_emb, 1: implement category_emb')
 
     # loss related
@@ -245,7 +245,7 @@ def swap_query_positive(array):
 
     return swapped_indices
 # In Batch negative loss (zozo + alpha) 
-def Set_item_Cross_entropy(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
+def InBatchCLIPLoss(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
     
     y_true = create_true_index(labels.shape[0])
     set_size = tf.reduce_sum(tf.cast(labels != tf.reduce_max(labels), tf.float32), axis=1)
@@ -354,7 +354,7 @@ def Set_item_Cross_entropy(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
     
     return Loss
 
-def random_negative_CLIPLoss(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
+def OutBatchCLIPLoss(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
     
     y_true = create_true_index(labels.shape[0])
     set_size = tf.reduce_sum(tf.cast(labels != tf.reduce_max(labels), tf.float32), axis=1)
