@@ -297,7 +297,7 @@ class DataGenerator:
         self.negative_sch = negative_sch
         
         # load train data
-        with open(f'{data_path}/train2.pkl', 'rb') as fp:
+        with open(f'{data_path}/train.pkl', 'rb') as fp:
             self.x_train = pickle.load(fp)
             self.y_train = pickle.load(fp)
 
@@ -313,7 +313,7 @@ class DataGenerator:
             self.train_num = max_data
 
         # load validation data
-        with open(f'{data_path}/valid2.pkl', 'rb') as fp:
+        with open(f'{data_path}/valid.pkl', 'rb') as fp:
             self.x_valid = pickle.load(fp)
             self.y_valid = pickle.load(fp)
 
@@ -324,7 +324,7 @@ class DataGenerator:
         self.valid_num = len(self.x_valid)  
 
         # load test data
-        with open(f'{data_path}/test2.pkl', 'rb') as fp:
+        with open(f'{data_path}/test.pkl', 'rb') as fp:
             self.x_test = pickle.load(fp)
             self.y_test = pickle.load(fp)
 

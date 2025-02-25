@@ -334,10 +334,11 @@ class SetMatchingModel(tf.keras.Model):
         self.MLP = []
         
         # whitening path load
-        with open(self.whitening_path, 'rb') as fp:
-            self.gause_noise = pickle.load(fp)
-            self.whitening_mean = pickle.load(fp)
-            self.whitening_std = pickle.load(fp)
+        if self.pretrain:
+            with open(self.whitening_path, 'rb') as fp:
+                self.gause_noise = pickle.load(fp)
+                self.whitening_mean = pickle.load(fp)
+                self.whitening_std = pickle.load(fp)
         #---------------------
 
     # compute score of set-pair using dot product
