@@ -296,6 +296,7 @@ class SetMatchingModel(tf.keras.Model):
         self.seed_init = seed_init
         self.whitening_path = Whitening_path
         self.pretrain = pretrain
+        self.max_channel_ratio = max_channel_ratio
 
         if self.seed_init != 0:
             self.dim_shift15 = len(self.seed_init[0])
@@ -361,7 +362,9 @@ class SetMatchingModel(tf.keras.Model):
         # CNN
         if self.isCNN:
             x, predCNN = self.CNN((x,x_size),training=False)
-        
+        # models.pyで呼び出すときにフラグ変更
+        if x.shape[-1] == self.baseChn * self.max_channel_ratio:
+            self.pretrain = False
         if self.pretrain:
             x = tf.matmul(x, tf.cast(self.gause_noise, tf.float32))
         predCNN = []
