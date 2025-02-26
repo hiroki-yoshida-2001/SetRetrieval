@@ -55,7 +55,7 @@ rep_vec_num = 41
 
 # set random seed (gpu)
 os.environ['TF_DETERMINISTIC_OPS'] = '1'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 np.random.seed(args.trial)
 tf.random.set_seed(args.trial)
 #----------------------------
@@ -83,7 +83,7 @@ else:
 
 # make experiment path containing CNN and set-to-set model
 # experiment path を動的に作成する
-experimentPath = 'Experiment_Shift15M'
+experimentPath = 'Experiment_Shift15M_tmp'
 
 if args.pretrained_mlp:
     experimentPath = f"{experimentPath}_TrainMLP"
@@ -308,7 +308,10 @@ if not os.path.exists(path):
     # model_mlp.load_weights(mlp_checkpoint_path)
     # model_smn.MLP = model_mlp
     model_smn.SetMatchingModel = set_matching_model
-    model_smn.compile(optimizer='adam',loss=util.random_negative_CLIPLoss, metrics=util.Retrieval_acc,run_eagerly=True)
+    if gallerytype == 'InBatch': # zozo + alpha loss
+        model_smn.compile(optimizer="adam", loss=util.InBatchCLIPLoss, metrics=util.Retrieval_acc, run_eagerly=True)
+    else: # proposed loss 
+        model_smn.compile(optimizer="adam", loss=util.OutBatchCLIPLoss, metrics=util.Retrieval_acc, run_eagerly=True)
 
     # test_loss, test_acc = model_smn.evaluate((x_test,x_size_test, [], c2_test),y_test,batch_size=batch_size,verbose=1) 
     test_pred_vec, gallery, replicated_set_label, query_id = model_smn.predict((x_test[:7700],x_size_test[:7700], c2_test[:7700], y_test[:7700], item_label_test[:7700]),batch_size=100, verbose=1)
