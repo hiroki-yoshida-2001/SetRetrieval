@@ -162,7 +162,7 @@ class MLP(tf.keras.Model):
 #----------------------------
 # set matching network
 class SMN(tf.keras.Model):
-    def __init__(self, is_set_norm=False, num_layers=1, num_heads=2, calc_set_sim='BERTscore', baseChn=32, baseMlp = 512, rep_vec_num=1, seed_init = 0, max_channel_ratio=2, set_loss=False, is_category_emb=False, c1_label=True, gallerytype = 'OutBatch', style_loss = 'item_style', whitening=None):
+    def __init__(self, is_set_norm=False, num_layers=1, num_heads=2, calc_set_sim='BERTscore', baseChn=32, baseMlp = 512, rep_vec_num=1, seed_init = 0, max_channel_ratio=2, set_loss=False, is_category_emb=False, c1_label=True, gallerytype = 'OutBatch', style_loss = 'item_style', L2_norm_loss = False, whitening=None):
         super(SMN, self).__init__()
         self.num_layers = num_layers
         self.calc_set_sim = calc_set_sim
@@ -175,13 +175,16 @@ class SMN(tf.keras.Model):
         self.is_c1label = c1_label
         self.gallerytype = gallerytype
         self.style_method = style_loss
+        self.is_L2_norm_loss = L2_norm_loss
         self.linear_parampath = whitening
         self.isSelf = True
         self.isCross = True
         self.isSelfShareParam = False
         self.isCrossShareParam = False
+        self.l2_loss_weight = 1.0
         isInstanceNorm = False
         isCrossNorm = False
+        
         
         if self.seed_init != 0:
             self.dim_shift15 = len(self.seed_init[0])
@@ -763,6 +766,25 @@ class SMN(tf.keras.Model):
         
         return tf.reduce_mean(result)
     
+    # L2 norm loss between pred and positive set
+    def L2_norm_loss(self, pred, y, pred_size):
+        # pred, y : (Batch, nItemMax, Dim)
+        batch_size, item_size, dim = pred.shape
+        y = tf.cast(y, tf.float32)
+        range_items = tf.range(item_size, dtype=tf.float32)  # (nItemMax,)
+        item_mask = tf.expand_dims(pred_size, axis=1) > range_items  # Shape: (Batch, nItemMax)
+        # pred = (pred-self.whitening_mean) / self.whitening_std
+        # y = (y-self.whitening_mean) / self.whitening_std
+
+        # normalization
+        # pred = tf.nn.l2_normalize(pred, axis=1)
+        # y = tf.nn.l2_normalize(y, axis=1)
+        L2_diff = tf.norm(pred - y, axis=-1) # (Batch, nItemMax)
+        L2_diff = L2_diff * self.l2_loss_weight
+        masked_item_loss = L2_diff * tf.cast(item_mask, tf.float32)
+        L2_loss = tf.reduce_sum(masked_item_loss, axis=-1) / tf.maximum(pred_size, 1.0) # (Batch,)
+
+        return tf.reduce_mean(L2_loss)
     # train step
     def train_step(self,data):
         # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
@@ -865,8 +887,13 @@ class SMN(tf.keras.Model):
             else:
                 style_loss = 0
             
+            if self.is_L2_norm_loss:
+                l2_loss = self.L2_norm_loss(pred=predSMN, y=gallery, pred_size=pred_size)
+            else:
+                l2_loss = 0
             if not self.set_loss:
-                loss = self.compiled_loss(y_pred = cos_sim_forloss, y_true = c_label, regularization_losses=self.losses) + style_loss * (1/20) + setMatchingloss
+                loss = self.compiled_loss(y_pred = cos_sim_forloss, y_true = c_label, regularization_losses=self.losses) + style_loss * (1/20) + setMatchingloss + l2_loss
+                
                 # loss = self.compiled_loss(y_pred = cos_sim, y_true = c_label, regularization_losses=self.losses)
             else:
                 loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
@@ -896,7 +923,7 @@ class SMN(tf.keras.Model):
         if not self.set_loss:
             self.compiled_metrics.update_state(cos_sim_forrank, pred_size)
             # return metrics as dictionary
-            return {'cos_sim_loss': loss-style_loss*(1/20)-setMatchingloss, 'Match_loss': setMatchingloss, 'style_loss': style_loss * (1/20),'Set_accuracy':self.metrics[1].result()}
+            return {'cos_sim_loss': loss-style_loss*(1/20)-setMatchingloss-l2_loss, 'Match_loss': setMatchingloss, 'L2_loss': l2_loss,'Set_accuracy':self.metrics[1].result()}
         else:
             self.compiled_metrics.update_state(set_score, y_true)
             # return metrics as dictionary
@@ -995,9 +1022,14 @@ class SMN(tf.keras.Model):
             style_loss = self.style_content_loss(predSMN, weights_gallery, pred_size)
         else:
             style_loss = 0
+        
+        if self.is_L2_norm_loss:
+            l2_loss = self.L2_norm_loss(pred=predSMN, y=gallery, pred_size=pred_size)
+        else:
+            l2_loss = 0
 
         if not self.set_loss:
-            loss = self.compiled_loss(y_pred = cos_sim_forloss, y_true = c_label, regularization_losses=self.losses) + style_loss * (1/20) + setMatchingloss
+            loss = self.compiled_loss(y_pred = cos_sim_forloss, y_true = c_label, regularization_losses=self.losses) + style_loss * (1/20) + setMatchingloss + l2_loss
             # loss = self.compiled_loss(y_pred = cos_sim, y_true = c_label, regularization_losses=self.losses)
         else:
             loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
@@ -1005,7 +1037,7 @@ class SMN(tf.keras.Model):
         if not self.set_loss:
             self.compiled_metrics.update_state(cos_sim_forrank, pred_size)
             # return metrics as dictionary
-            return {'cos_sim_loss': loss-style_loss*(1/20)-setMatchingloss, 'Match_loss': setMatchingloss, 'style_loss': style_loss * (1/20),'Set_accuracy':self.metrics[1].result()}
+            return {'cos_sim_loss': loss-style_loss*(1/20)-setMatchingloss-l2_loss, 'Match_loss': setMatchingloss, 'L2_loss': l2_loss,'Set_accuracy':self.metrics[1].result()}
             # return {m.name: m.result() for m in self.metrics}
         else:
             # update metrics

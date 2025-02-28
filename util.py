@@ -60,6 +60,7 @@ def parser_run():
     # loss related
     parser.add_argument('-gallerytype', type=int, default=1, help='0: use in batch negative , 1: use out batch negative')
     parser.add_argument('-style_loss', type=int, default=1, help='0 not use style loss,  1:use style loss , 2: use style loss but with DFA')
+    parser.add_argument('-is_l2_loss', type=int, default=0, help='0: not use l2_loss , 1: use l2_loss')
 
     return parser
 #----------------------------

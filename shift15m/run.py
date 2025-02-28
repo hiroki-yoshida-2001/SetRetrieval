@@ -55,7 +55,7 @@ rep_vec_num = 41
 
 # set random seed (gpu)
 os.environ['TF_DETERMINISTIC_OPS'] = '1'
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 np.random.seed(args.trial)
 tf.random.set_seed(args.trial)
 #----------------------------
@@ -83,7 +83,7 @@ else:
 
 # make experiment path containing CNN and set-to-set model
 # experiment path を動的に作成する
-experimentPath = 'Experiment_Shift15M_tmp'
+experimentPath = 'Experiment_Shift15M'
 
 if args.pretrained_mlp:
     experimentPath = f"{experimentPath}_TrainMLP"
@@ -104,6 +104,7 @@ if args.is_set_norm:
     modelPath += f'_setnorm'
 
 modelPath = os.path.join(modelPath, f"negativesch{args.negative_scheduling}")
+modelPath = os.path.join(modelPath, f"is_l2_loss{args.is_l2_loss}")
 modelPath = os.path.join(modelPath, f"batch_size{batch_size}")
 modelPath = os.path.join(modelPath,f"year{year}")
 modelPath = os.path.join(modelPath,f"max_item_num{max_item_num}")
@@ -240,7 +241,7 @@ else:
 
 # ------------------------
 # set-matching network
-model_smn = models.SMN(is_set_norm=args.is_set_norm, num_layers=args.num_layers, num_heads=args.num_heads, baseChn=args.baseChn, rep_vec_num=rep_vec_num, seed_init = seed_vectors, is_category_emb=args.category_emb, set_loss=args.set_loss, c1_label=args.label_ver, gallerytype=gallerytype, style_loss=style_method, whitening=whitening_path)
+model_smn = models.SMN(is_set_norm=args.is_set_norm, num_layers=args.num_layers, num_heads=args.num_heads, baseChn=args.baseChn, rep_vec_num=rep_vec_num, seed_init = seed_vectors, is_category_emb=args.category_emb, set_loss=args.set_loss, c1_label=args.label_ver, gallerytype=gallerytype, style_loss=style_method, L2_norm_loss=args.is_l2_loss, whitening=whitening_path)
 
 checkpoint_path = os.path.join(modelPath,"model/cp.ckpt")
 checkpoint_dir = os.path.dirname(checkpoint_path)
@@ -272,8 +273,8 @@ if not os.path.exists(result_path):
     val_match_loss = history.history['val_Match_loss']
     cos_sim_loss = history.history['cos_sim_loss']
     val_cos_sim_loss = history.history['val_cos_sim_loss']
-    style_loss = history.history['style_loss']
-    val_style_loss = history.history['val_style_loss']
+    L2_loss = history.history['L2_loss']
+    val_L2_loss = history.history['val_L2_loss']
 
     # plot loss & acc
     # util.plotLossACC(modelPath,loss,val_loss,acc,val_acc)
@@ -286,8 +287,8 @@ if not os.path.exists(result_path):
         pickle.dump(val_match_loss,fp)
         pickle.dump(cos_sim_loss, fp)
         pickle.dump(val_cos_sim_loss, fp)
-        pickle.dump(style_loss, fp)
-        pickle.dump(val_style_loss, fp)
+        pickle.dump(L2_loss, fp)
+        pickle.dump(val_L2_loss, fp)
 else:
     # load trained parameters
     print("load models")
@@ -361,10 +362,6 @@ nan_pd_array = np.where(averages_array == -1, np.nan, averages_array)
 # mean_values = np.nanmean(nan_pd_array, axis=1)
 mean_values = np.nanmean(nan_pd_array, axis=-1)
 
-averages_array = np.array(x_test)
-nan_pd_array = np.where(averages_array == -1, np.nan, averages_array)
-mean_values = np.nanmean(nan_pd_array, axis=1)
-mean_value = np.mean(mean_values)
 
 unique_labels = np.unique(category2_test[:7700])
 
