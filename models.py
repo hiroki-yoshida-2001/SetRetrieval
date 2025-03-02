@@ -338,6 +338,7 @@ class SMN(tf.keras.Model):
         #---------------------
         
         x = tf.tile(tf.expand_dims(x,1),[1,y_nSet,1,1])
+        pre_y = y
         y = tf.tile(tf.expand_dims(y,1),[1,x_nSet,1,1])
         #---------------------
         #---------------------------------------------------------------------
@@ -484,7 +485,7 @@ class SMN(tf.keras.Model):
 
         #---------------------------------------------------------------------
         
-        return predCNN, y_pred, debug
+        return pre_y, y_pred, debug
     
     # compute cosine similarity between all pairs of items and BERTscore.
     def BERT_set_score(self, x, nItem,beta=0.2):
@@ -767,10 +768,15 @@ class SMN(tf.keras.Model):
         return tf.reduce_mean(result)
     
     # L2 norm loss between pred and positive set
+    # * pred<= predSMN, y<= before_pred
     def L2_norm_loss(self, pred, y, pred_size):
         # pred, y : (Batch, nItemMax, Dim)
         batch_size, item_size, dim = pred.shape
         y = tf.cast(y, tf.float32)
+
+        # cos_sim related striction
+        # norm_ratio = (tf.norm(pred,axis=-1) + 1e-6) / (tf.norm(y, axis=-1) + 1e-6)
+        # L2_loss = tf.nn.relu(-(1.0 - norm_ratio))
         range_items = tf.range(item_size, dtype=tf.float32)  # (nItemMax,)
         item_mask = tf.expand_dims(pred_size, axis=1) > range_items  # Shape: (Batch, nItemMax)
         # pred = (pred-self.whitening_mean) / self.whitening_std
@@ -779,9 +785,12 @@ class SMN(tf.keras.Model):
         # normalization
         # pred = tf.nn.l2_normalize(pred, axis=1)
         # y = tf.nn.l2_normalize(y, axis=1)
+
         L2_diff = tf.norm(pred - y, axis=-1) # (Batch, nItemMax)
         L2_diff = L2_diff * self.l2_loss_weight
+
         masked_item_loss = L2_diff * tf.cast(item_mask, tf.float32)
+        # masked_item_loss = L2_loss * tf.cast(item_mask, tf.float32)
         L2_loss = tf.reduce_sum(masked_item_loss, axis=-1) / tf.maximum(pred_size, 1.0) # (Batch,)
 
         return tf.reduce_mean(L2_loss)
@@ -836,9 +845,9 @@ class SMN(tf.keras.Model):
             
             if not self.set_loss:
                 # predCNN, predSMN, debug = self((x, x_size, ans_c_label, ans_c1_label, pred_size), training=True)
-                predCNN, predSMN, debug = self(((x, x_size), (y_pred, pred_size)), training=True)
+                before_pred, predSMN, debug = self(((x, x_size), (y_pred, pred_size)), training=True)
             else:
-                predCNN, predSMN, debug = self((x, x_size), training=True)
+                before_pred, predSMN, debug = self((x, x_size), training=True)
             
             # if not self.label_slice:
             #     predSMN = tf.gather(predSMN, ans_c_label, batch_dims=1)
@@ -888,7 +897,8 @@ class SMN(tf.keras.Model):
                 style_loss = 0
             
             if self.is_L2_norm_loss:
-                l2_loss = self.L2_norm_loss(pred=predSMN, y=gallery, pred_size=pred_size)
+                # l2_loss = self.L2_norm_loss(pred=predSMN, y=gallery, pred_size=pred_size)
+                l2_loss = self.L2_norm_loss(pred=predSMN, y=before_pred, pred_size=pred_size)
             else:
                 l2_loss = 0
             if not self.set_loss:
@@ -972,9 +982,9 @@ class SMN(tf.keras.Model):
         y_pred = tf.gather(y_pred, ans_c_label, batch_dims=1)
         y_size = tf.constant(np.full(x.shape[0],41).astype(np.float32))
         if not self.set_loss:
-            predCNN, predSMN, debug = self(((x, x_size), (y_pred, pred_size)), training=False)
+            before_pred, predSMN, debug = self(((x, x_size), (y_pred, pred_size)), training=False)
         else:
-            predCNN, predSMN, debug = self((x, x_size), training=False)
+            before_pred, predSMN, debug = self((x, x_size), training=False)
         
 
         # ---------------マッチングスコア計算部分------------------
@@ -1024,7 +1034,8 @@ class SMN(tf.keras.Model):
             style_loss = 0
         
         if self.is_L2_norm_loss:
-            l2_loss = self.L2_norm_loss(pred=predSMN, y=gallery, pred_size=pred_size)
+            # l2_loss = self.L2_norm_loss(pred=predSMN, y=gallery, pred_size=pred_size)
+            l2_loss = self.L2_norm_loss(pred=predSMN, y=before_pred, pred_size=pred_size)
         else:
             l2_loss = 0
 
@@ -1077,7 +1088,7 @@ class SMN(tf.keras.Model):
         # predict
         # predSMN : (nSet, nItemMax, d)
         # predCNN, predSMN, debug = self((x, x_size, [], ans_c_label, pred_size), training=False)
-        predCNN, predSMN, debug = self(((x, x_size), (y_pred, y_size)), training=False)
+        before_pred, predSMN, debug = self(((x, x_size), (y_pred, y_size)), training=False)
 
         
         if len(x) <= 50:
