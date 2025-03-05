@@ -5,9 +5,10 @@ import pickle
 import tensorflow as tf
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+import pdb
 
 # GPUの設定（必要に応じて調整）
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 def load_categories(categories_json_path):
     with open(categories_json_path, 'r') as f:
@@ -62,19 +63,26 @@ def prepare_data(image_paths, labels):
 
 def build_simple_category_model(num_classes):
     inputs = tf.keras.Input(shape=(224, 224, 3))
-    base_model = tf.keras.applications.VGG16(weights='imagenet', include_top=False, input_tensor=inputs)
+    base_model = tf.keras.applications.VGG16(weights='imagenet', include_top=True, input_tensor=inputs)
+    from tensorflow.keras.models import Model
+    model = Model(inputs=base_model.input, outputs=base_model.get_layer("fc1").output)
     
-    x = tf.keras.layers.Flatten()(base_model.output)
-    x = tf.keras.layers.Dense(512, activation='gelu')(x)
-    x = tf.keras.layers.Dropout(0.5)(x)
+    # x = tf.keras.layers.Flatten()(base_model.output)
     
-    # Dense層（活性化関数なし）
-    x = tf.keras.layers.Dense(128, activation=None, name='feature_layer_cat_dense')(x)
+    x = model.output
+    # gause_noise = np.random.randn(7*7*512, 4096)
+    # x = tf.matmul(x, gause_noise)
+    # pdb.set_trace()
+    # x = tf.keras.layers.Dense(512, activation='gelu')(x)
+    # x = tf.keras.layers.Dropout(0.5)(x)
     
-    # 活性化関数を別の層として適用
-    x = tf.keras.layers.Activation('gelu', name='feature_layer_cat_activation')(x)
+    # # Dense層（活性化関数なし）
+    # x = tf.keras.layers.Dense(128, activation=None, name='feature_layer_cat_dense')(x)
     
-    outputs = tf.keras.layers.Dense(num_classes, activation='softmax', name='category_output')(x)
+    # # 活性化関数を別の層として適用
+    # x = tf.keras.layers.Activation('gelu', name='feature_layer_cat_activation')(x)
+    
+    outputs = x
     
     model = tf.keras.models.Model(inputs, outputs)
     
@@ -88,7 +96,7 @@ def build_feature_extractor(model):
     # 'feature_layer_cat_dense' 層の出力を取得（活性化前）
     feature_extractor = tf.keras.models.Model(
         inputs=model.input,
-        outputs=model.get_layer('feature_layer_cat_dense').output  # 活性化前の出力
+        outputs=model.output  # 活性化前の出力
     )
     return feature_extractor
 
@@ -98,7 +106,7 @@ def main():
     import random
     import numpy as np
     import tensorflow as tf
-
+    pdb.set_trace()
     # ログメッセージの抑制（必要に応じて）
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0: 全て表示, 1: INFO非表示, 2: WARNING非表示, 3: ERRORのみ
 
@@ -107,7 +115,7 @@ def main():
     parser.add_argument('--categories_json_path', type=str, required=True, help='カテゴリ情報が格納されたJSONファイルのパス')
     parser.add_argument('--furnitures_jsonl_path', type=str, required=True, help='家具ラベル情報が格納されたJSONLファイルのパス')
     parser.add_argument('--annotations_json_path', type=str, required=True, help='シーン情報が格納されたアノテーションJSONファイルのパス')
-    parser.add_argument('--raw_data_path', type=str, default='uncompressed_data/raw_data.pkl', help='抽出した特徴量とラベルを保存するパス')
+    parser.add_argument('--raw_data_path', type=str, default='deep_furniture4096.pkl', help='抽出した特徴量とラベルを保存するパス')
     parser.add_argument('--epochs', type=int, default=10, help='カテゴリモデルの学習エポック数')
     parser.add_argument('--batch_size', type=int, default=32, help='カテゴリモデルのバッチサイズ')
     args = parser.parse_args()
@@ -148,17 +156,17 @@ def main():
         loss='sparse_categorical_crossentropy',
         metrics=['accuracy']
     )
-    category_model.fit(
-        all_images, all_labels,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        validation_split=0.1,
-        verbose=1
-    )
+    # category_model.fit(
+    #     all_images, all_labels,
+    #     epochs=args.epochs,
+    #     batch_size=args.batch_size,
+    #     validation_split=0.1,
+    #     verbose=1
+    # )
     print("Category model training completed.")
 
     # モデルの概要確認（デバッグ用）
-    category_model.summary()
+    # category_model.summary()
 
     # 特徴量抽出（活性化関数適用前の出力）
     print("Extracting features using the trained category model...")
@@ -204,16 +212,19 @@ def main():
             # 特徴量を抽出（全画像から抽出した特徴量を使用）
             features = all_features[item_indices]
             category_ids = np.array(category_ids, dtype=int)  # shape: (n_items,)
+            
+            item_ids = np.array(item_ids, dtype=int) # shape: (n_items, )
             scene_features[scene_id] = {
                 'features': features,            # shape: (n_items, 128)
                 'item_indices': item_indices,    # list of indices
-                'category_ids': category_ids     # array of category IDs
+                'category_ids': category_ids ,    # array of category IDs
+                'item_ids': item_ids              # array of item IDs
             }
 
     # 特徴量とシーンIDの保存
     print("Saving scene-wise features to raw_data.pkl...")
-    if not os.path.exists(os.path.dirname(args.raw_data_path)):
-        os.makedirs(os.path.dirname(args.raw_data_path))
+    # if not os.path.exists(os.path.dirname(args.raw_data_path)):
+    #     os.makedirs(os.path.dirname(args.raw_data_path))
     with open(args.raw_data_path, 'wb') as f:
         pickle.dump(scene_features, f)
     print("raw_data.pkl has been created with scene-wise features, IDs, and category IDs.")
