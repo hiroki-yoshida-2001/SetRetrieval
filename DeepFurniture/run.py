@@ -240,7 +240,8 @@ if not os.path.exists(path):
     # model_mlp.load_weights(mlp_checkpoint_path)
     # model_smn.MLP = model_mlp
     model_smn.SetMatchingModel = set_matching_model
-    model_smn.compile(optimizer='adam',loss=util.random_negative_CLIPLoss, metrics=util.Retrieval_acc,run_eagerly=True)
+    # 損失の指定はcompile用なので任意指定(inbatch, outbatchどちらでも)
+    model_smn.compile(optimizer='adam',loss=util.OutBatchCLIPLoss, metrics=util.Retrieval_acc,run_eagerly=True)
 
     # test_loss, test_acc = model_smn.evaluate((x_test,x_size_test, [], c2_test),y_test,batch_size=batch_size,verbose=1) 
     x_test, x_size_test, c_label_test, y_test, ans_c_label_test, test_pred_vec, gallery, test_item_id = model_smn.predict((test_data_set),batch_size=100, verbose=1)
