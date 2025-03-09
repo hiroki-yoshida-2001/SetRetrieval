@@ -416,10 +416,10 @@ class DataGenerator:
         for index in range(0, len(self.inds_test)-34, self.batch_size):
             start_ind = index
             batch_inds = self.inds_test[start_ind:start_ind + self.batch_size]
-            x_batch = self.x_valid[start_ind:start_ind + self.batch_size]
+            x_batch = self.x_test[start_ind:start_ind + self.batch_size]
             y_batch = self.y_test[start_ind:start_ind + self.batch_size]
             # y_batch = y_batch.astype(np.float64)
-            x_size_batch = self.x_size_valid[start_ind:start_ind + self.batch_size]
+            x_size_batch = self.x_size_test[start_ind:start_ind + self.batch_size]
             c_batch = self.c_label_test[start_ind:start_ind + self.batch_size]
             inds_batch = self.inds_test[start_ind:start_ind + self.batch_size]
             id_batch = self.x_id_test[start_ind:start_ind + self.batch_size]
