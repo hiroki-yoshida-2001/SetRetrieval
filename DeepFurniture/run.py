@@ -230,8 +230,8 @@ else:
 
 #---------------------------------
 
-path = os.path.join(modelPath, "result/predict_vector_test.pkl")
-if not os.path.exists(path):  
+test_data_path = os.path.join(modelPath, "result/predict_vector_test.pkl")
+if not os.path.exists(test_data_path):  
     train_generator = data.DataGenerator(year=year, batch_size=98, max_item_num=max_item_num, use_all_pred=False) 
     test_data_set = train_generator.get_test_dataset()
     # set data generator for evaluation and test (similar settings using test.pkl as train and valid)
@@ -240,13 +240,12 @@ if not os.path.exists(path):
     # model_mlp.load_weights(mlp_checkpoint_path)
     # model_smn.MLP = model_mlp
     model_smn.SetMatchingModel = set_matching_model
-    # 損失の指定はcompile用なので任意指定(inbatch, outbatchどちらでも)
     model_smn.compile(optimizer='adam',loss=util.OutBatchCLIPLoss, metrics=util.Retrieval_acc,run_eagerly=True)
 
     # test_loss, test_acc = model_smn.evaluate((x_test,x_size_test, [], c2_test),y_test,batch_size=batch_size,verbose=1) 
     x_test, x_size_test, c_label_test, y_test, ans_c_label_test, test_pred_vec, gallery, test_item_id = model_smn.predict((test_data_set),batch_size=100, verbose=1)
     
-    with open(path,'wb') as fp:
+    with open(test_data_path,'wb') as fp:
         pickle.dump(test_pred_vec, fp)
         pickle.dump(gallery, fp)
         pickle.dump(y_test, fp)
@@ -254,7 +253,7 @@ if not os.path.exists(path):
         pickle.dump(ans_c_label_test,fp)
         pickle.dump(test_item_id, fp)
 else:
-    with open(path, 'rb') as fp:
+    with open(test_data_path, 'rb') as fp:
         test_pred_vec = pickle.load(fp)
         gallery = pickle.load(fp)
         y_test = pickle.load(fp)
@@ -262,39 +261,23 @@ else:
         ans_c_label_test = pickle.load(fp)
         test_item_id = pickle.load(fp)
 
-test_rank = True
-path = os.path.join(modelPath, "result/ranking_test.pkl")
+test_rank = False
+rank_path = os.path.join(modelPath, "result/ranking_Test.pkl")
 if test_rank:
     rank = util.compute_test_rank(gallery, test_pred_vec, y_test, c_label_test)
-    with open(path, 'wb') as fp:
+    with open(rank_path, 'wb') as fp:
         pickle.dump(rank, fp)
-else:
-    with open(path, 'rb') as fp:
-        rank = pickle.load(fp)
-   
-   
-rank = np.array(rank)
-predict_rank = rank
 # predict_rank = np.min(rank, axis=-1)
 
-averages = []
-for row in predict_rank:
-    positive_elements = row[row != -1]
-    average = np.mean(positive_elements)
-    averages.append(average)
+# Top-Kaccuracy metrics 
+util.ranking_analysis(Ranking_pkl_path=rank_path, data_path=test_data_path, Dataset='DeepFurniture')
 
-# 平均値のリストを配列に変換
-averages_array = np.array(averages)
-nan_pd_array = np.where(averages_array == -1, np.nan, averages_array)
-# mean_values = np.nanmean(nan_pd_array, axis=1)
-mean_values = np.nanmean(nan_pd_array, axis=-1)
 
-train_generator = data.DataGenerator(year=year, batch_size=28, max_item_num=max_item_num, use_all_pred=False)
-test_data_set = train_generator.get_test_dataset()
-
-Test_match_score = True
+Test_match_score = False
 path = os.path.join(modelPath, "result/Matchscore_test.pkl")
 if Test_match_score:
+    train_generator = data.DataGenerator(year=year, batch_size=28, max_item_num=max_item_num, use_all_pred=False)
+    test_data_set = train_generator.get_test_dataset()
     test_pred_vec, gallery, Real_score, Fake_score = model_smn.predict((test_data_set),batch_size=50, verbose=1)
 
     # 真の組み合わせと予測の組み合わせを同時に保存
@@ -304,4 +287,11 @@ if Test_match_score:
         pickle.dump(Fake_score, fp)
 
 
-# Visualize path
+# Visualize Furniture Cordinate Set
+visualize = False
+if visualize:
+
+    image_dir = "/data1/yamazono/research/DeepFurniture/uncompressed_data/furnitures"
+    save_dir = "/data1/yoshida/setMatching/shift15m/Deepfurniture/visualization_results"
+
+    util.visualize_set_top3(test_data_path, image_dir, save_dir)

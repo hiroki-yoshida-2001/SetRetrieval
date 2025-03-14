@@ -1,10 +1,14 @@
 import argparse
 import matplotlib.pylab as plt
 import tensorflow as tf
+import seaborn as sns
 import numpy as np
 import os
 import math
 import pdb
+import pickle
+import seaborn as sns
+from PIL import Image
 
 
 #----------------------------
@@ -251,7 +255,11 @@ def InBatchCLIPLoss(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
     y_true = create_true_index(labels.shape[0])
     set_size = tf.reduce_sum(tf.cast(labels != tf.reduce_max(labels), tf.float32), axis=1)
     pred_set_size = tf.gather(set_size, tf.where(tf.equal(y_true,1))[:,1])
+
     negative_sampling = "mean"
+    threshold_alpha = 0.10
+    # Switching CLPPNeg option manually...
+    CLPPNeg = True
     # -------------------------------------
     
     batch_loss = []
@@ -291,17 +299,17 @@ def InBatchCLIPLoss(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
                             negative_scores = tf.math.top_k(negative_scores, k=5).values
                     
                     # Calculate exponential scores for negative normalization: (Batch, N, Batch)
-                    exp_negative_scores = tf.exp(negative_scores)
+                    negative_exp = tf.exp(negative_scores)
                     
                     # Calculate exponential scores for negative normalization: (Batch, N, Batch)
-                    # exp_negative_scores = tf.exp(negative_scores)
-                    exp_positive_scores = tf.exp(positive_scores)
+                    # negative_exp = tf.exp(negative_scores)
+                    positive_exp = tf.exp(positive_scores)
                     
                     # Denominator includes positive and all negative scores: (Batch, N)
-                    denom = tf.reduce_mean(exp_negative_scores) + exp_positive_scores
+                    denom = tf.reduce_mean(negative_exp) + positive_exp
                     
                     # Contrastive loss for each item: (Batch, N)
-                    entropy_loss = -tf.math.log(exp_positive_scores / denom)
+                    entropy_loss = -tf.math.log(positive_exp / denom)
                     item_loss.append(entropy_loss)
                     # item_loss.append(0)
                 else:
@@ -318,7 +326,7 @@ def InBatchCLIPLoss(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
                     # losses manually
                     # Extract positive scores using Label: (Batch, N)
                     positive_scores = tf.reduce_sum(pred_scores * label)
-                    
+                
                     # Mask out positive positions for negatives: (Batch, N, Batch)
                     negative_mask = 1.0 - label
                     negative_scores = pred_scores * negative_mask
@@ -330,25 +338,28 @@ def InBatchCLIPLoss(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
                             negative_scores = tf.math.top_k(negative_scores, k=5).values
                     
                     # Calculate exponential scores for negative normalization: (Batch, N, Batch)
-                    exp_negative_scores = tf.exp(negative_scores)
-                    exp_positive_scores = tf.exp(positive_scores)
+                    negative_exp = tf.exp(negative_scores)
+                    positive_exp = tf.exp(positive_scores)
                     
-                    # Denominator includes positive and all negative scores: (Batch, N)
-                    denom = tf.reduce_mean(exp_negative_scores) + exp_positive_scores
+                    if CLPPNeg:
+                        score_diff = positive_exp - negative_exp
+                        mask  = tf.cast(score_diff < positive_exp * threshold_alpha, tf.float32)
+                        masked_negative_exp = negative_exp * mask
+                        negative_exp_sum = tf.reduce_sum(masked_negative_exp)
+                        denom = negative_exp_sum + positive_exp
+                    else:
+                        # Denominator includes positive and all negative scores: (Batch, N)
+                        negative_exp_sum = tf.reduce_mean(negative_exp)
+                        denom = negative_exp_sum + positive_exp
                     
                     # Contrastive loss for each item: (Batch, N)
-                    entropy_loss = -tf.math.log(exp_positive_scores / denom)
+                    entropy_loss = -tf.math.log(positive_exp / denom)
                     # entropy_loss = bce(label, pred_scores)
                     item_loss.append(entropy_loss)
-                    # print("positive_loss=")
-                    # print(positive_score)
-                    # print("item_loss=")
-                    # print(entropy_loss)
+                    
                     if tf.math.is_nan(positive_score):
                         pdb.set_trace()
                     
-
-             
         batch_loss.append(sum(item_loss) / pred_set_size[batch_ind])
 
     Loss = tf.stack(batch_loss)
@@ -361,7 +372,10 @@ def OutBatchCLIPLoss(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
     set_size = tf.reduce_sum(tf.cast(labels != tf.reduce_max(labels), tf.float32), axis=1)
     pred_set_size = tf.gather(set_size, tf.where(tf.equal(y_true,1))[:,1])
     batch_size, item_size, score_size = cos_sim.shape
-    threshold_alpha = 0.30
+
+    threshold_alpha = 0.10
+    # Switching CLPPNeg option manually...
+    CLPPNeg = True
 
     # One-hotラベルを計算するためのマスク作成
     range_items = tf.range(item_size, dtype=tf.float32)  # (nItemMax,)
@@ -385,7 +399,10 @@ def OutBatchCLIPLoss(labels:tf.Tensor,  cos_sim: tf.Tensor)->tf.Tensor:
     mask = tf.cast(score_diff < (tf.expand_dims(positive_exp,axis=-1) * threshold_alpha), tf.float32) # Shape: (Batch, item_size, nNegativeMax)
     masked_negative_exp = negative_exp * mask  # Masked Negative scores
     # Negativeスコアの指数の和
-    negative_exp_sum = tf.reduce_sum(masked_negative_exp, axis=2)  # Shape: (Batch, nItemMax)
+    if CLPPNeg:
+        negative_exp_sum = tf.reduce_sum(masked_negative_exp, axis=2)  # Shape: (Batch, nItemMax)
+    else:
+        negative_exp_sum = tf.reduce_sum(negative_exp, axis=2)  # Shape: (Batch, nItemMax)
 
     # 分母: positive + negatives
     denom = positive_exp + negative_exp_sum  # Shape: (Batch, nItemMax)
@@ -599,3 +616,217 @@ def compute_test_rank(gallery, pred, set_label, category):
     
     return ranks
 #----------------------------   
+
+def ranking_analysis(Ranking_pkl_path, data_path, Dataset='DeepFurniture'):
+    # Roading Result 
+    if Dataset == 'Shift15M':
+        with open(Ranking_pkl_path, 'rb') as fp:
+            rank_result = pickle.load(fp)
+
+        with open(data_path, 'rb') as fp:
+            test_pred_vec = pickle.load(fp)
+            gallery = pickle.load(fp)
+            y_test = pickle.load(fp)
+            replicated_set_label = pickle.load(fp)
+            query_id = pickle.load(fp)
+            c_label_test = pickle.load(fp)
+            item_label_test = pickle.load(fp)
+        MAXCATEGORY = 41
+    elif Dataset == 'DeepFurniture':
+        with open(Ranking_pkl_path, 'rb') as fp:
+            rank_result = pickle.load(fp)
+        with open(data_path, 'rb') as fp:
+            test_pred_vec = pickle.load(fp)
+            gallery = pickle.load(fp)
+            y_test = pickle.load(fp)
+            # replicated_set_label = pickle.load(fp)
+            # query_id = pickle.load(fp)
+            c_label_test = pickle.load(fp)
+            item_label_test = pickle.load(fp)
+        MAXCATEGORY = 11
+
+    y_true = cross_set_label(y_test)
+    y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+    c_label_test = tf.gather(c_label_test, tf.where(y_true==1)[:,1])
+
+    rank_array = np.array(rank_result)
+    unique_labels = np.unique(c_label_test)
+
+    # カテゴリごとのランク, スコアを格納する辞書
+    score_dict = {i: [] for i in range(MAXCATEGORY)}
+    acc_dict = {i: [] for i in range(MAXCATEGORY)}
+
+    if Dataset == 'Shift15M':
+        label_to_index = {'0': 41, '10001': 0, '10002': 1, '10003': 2, '10004': 3, '10005': 4, '11001': 5, '11002': 6, '11003': 7, '11004': 8, '11005': 9, '11006': 10, '11007': 11, '11008': 12, '12001': 13, '12002': 14, '12003': 15, '12004': 16, '12005': 17, '13001': 18, '13002': 19, '13003': 20, '13004': 21, '13005': 22, '14001': 23, '14002': 24, '14003': 25, '14004': 26, '14005': 27, '14006': 28, '14007': 29, '15001': 30, '15002': 31, '15003': 32, '15004': 33, '15005': 34, '15006': 35, '15007': 36, '16001': 37, '16002': 38, '16003': 39, '16004': 40}
+
+        vectorized_mapping = np.vectorize(lambda x: label_to_index[str(x)])
+
+        c_label_test = vectorized_mapping(c_label_test.numpy())
+    elif Dataset == 'DeepFurniture':
+        c_label_test = c_label_test.numpy()
+        
+    K_Threshold = [0.01, 0.05, 0.10, 0.20]
+
+    # カテゴリごとにランクを辞書に格納
+    for labels, score_row in zip(c_label_test, rank_array):
+        for label, score in zip(labels, score_row):
+            if not label >= MAXCATEGORY:
+                if label != MAXCATEGORY:  # パディングクラスを無視
+                    score_dict[label].append(score)
+
+    for k in K_Threshold:
+        topK_score = (np.unique(c_label_test, return_counts=True)[1]*k).astype(np.int64)
+        for label in range(MAXCATEGORY):
+            binary_data = [1 if x < topK_score[label] else 0 for x in score_dict[label]]
+            acc_dict[label].append(binary_data)
+
+        sum = []
+        for i in range(MAXCATEGORY):
+            sum.append(np.array(acc_dict[i]).mean())
+        print(f"Top{int(k*100)}percentile Accuracy (std) : ", np.array(sum).mean(), np.array(sum).std())
+        acc_dict = {i: [] for i in range(MAXCATEGORY)}
+
+    # # カテゴリごとにランクの平均を計算
+    # label_means = {}
+    # for label in unique_labels:
+    #     mask = (c_label_test == label)
+    #     if label==0:
+    #         mean_score = 0
+    #     else:
+    #         mean_score = rank_array[mask].mean()
+    #     label_means[label] = mean_score
+    #     bin_count = int(np.sqrt(len(rank_array[mask])))
+
+
+def visualize_set_top3(
+    data_path,
+    image_dir, 
+    save_dir
+):
+    """
+    predをクエリ、galleryをデータベースとみなし、カテゴリは考慮せず、
+    各セット (i=0～nSet-1) を1枚の画像 (行=4,列=nItem=8) で描画する。
+    
+    - 行0: クエリ画像 (pred[i,j])。もし test_item_id[i,j]==0 なら "Mask" としてアイテム無し。
+    - 行1～3: Top1～Top3候補。自分自身含む全galleryアイテム(nSet×nItem)との類似度をランキングし、上位3件を表示。
+    - 類似度はcosine類似度(L2正規化後の内積)。
+    - ファイル名 "set_1.png","set_2.png",…の連番。
+    - ans_c_label[i]はセット単位のラベル。例としてFigure全体のタイトルに表示。
+    - カテゴリには依存しない(=カテゴリによる除外しない)ので、Maskでもtest_item_id!=0ならTop3に出てくる可能性あり。
+    - 灰色の縦線は描画しない(ユーザ要望)。
+    """
+    with open(data_path, 'rb') as fp:
+        pred = pickle.load(fp) # (nSet, nItem, d) : test_pred_vec
+        gallery = pickle.load(fp) # (nSet, nItem, d) : gallery
+        y_test = pickle.load(fp)
+        c_label_test = pickle.load(fp)
+        ans_c_label = pickle.load(fp) # (nSet,)          : 1セットごとのラベル(例: ans_c_label_test)
+        test_item_id = pickle.load(fp) # (nSet, nItem)    : ID(0なら実在しない => "Mask")
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    nSet, nItem, d = gallery.shape
+    eps = 1e-10
+
+    # 1) L2正規化
+    pred_norm = pred / (np.linalg.norm(pred, axis=-1, keepdims=True) + eps)     # shape=(nSet, nItem, d)
+    gal_norm  = gallery / (np.linalg.norm(gallery, axis=-1, keepdims=True) + eps)
+
+    # 2) cos_simの一括計算: shape=(nSet_pred, nSet_gallery, nItem_pred, nItem_gallery)
+    #    cos_sim[i, x, j, y] = < pred_norm[i,j], gal_norm[x,y] >
+    x_expand = np.expand_dims(gal_norm, 0)   # (1, nSet_x, nItem, d)
+    y_expand = np.expand_dims(pred_norm, 1)  # (nSet_y, 1, nItem, d)
+    cos_sim = np.einsum('aijk,ibmk->abjm', y_expand, x_expand, optimize='optimal')
+    # shape = (nSet, nSet, nItem, nItem)
+
+    set_counter = 1
+
+    for i in range(nSet):
+        # Figure (行=4, 列=nItem)
+        fig, axes = plt.subplots(11, nItem, figsize=(3*nItem, 12))
+        # Figureタイトルに "Set {i} => ans_c_label[i]"
+        if ans_c_label is not None and i < len(ans_c_label):
+            fig.suptitle(f"Set {i}: Category={ans_c_label[i]}", fontsize=14)
+
+        for col in range(nItem):
+            q_id = test_item_id[i, col]
+            if q_id == 0:
+                # Mask or 非存在アイテム => 1行目に "Mask"
+                axes[0, col].text(0.5, 0.5, "Mask", ha="center", va="center", fontsize=12)
+                axes[0, col].axis("off")
+                # 下3行も "Mask"
+                for r in range(1,11):
+                    axes[r, col].text(0.5, 0.5, "Mask", ha="center", va="center")
+                    axes[r, col].axis("off")
+                continue
+            else:
+                # クエリ画像 (pred[i,col]) の表示
+                q_img_path = os.path.join(image_dir, f"{q_id}.jpg")
+                try:
+                    q_img = Image.open(q_img_path)
+                except:
+                    q_img = None
+                # axes[0, col].set_title(f"Positive")  
+                if q_img is not None:
+                    axes[0, col].imshow(q_img)
+                else:
+                    axes[0, col].text(0.5, 0.5, "Image not found", ha="center", va="center")
+                axes[0, col].axis("off")
+
+                # # 3) Top3計算: cos_sim[i, :, col, :] => shape=(nSet,nItem)
+                # vals_2d = cos_sim[i, :, col, :]     # shape=(nSet, nItem)
+                # vals = vals_2d.ravel()              # shape=(nSet*nItem,)
+
+                # # Top3を取得 (自分自身含む)
+                # top_idx = np.argsort(vals)[-3:][::-1]
+
+                # 同一カテゴリの候補（自身を除く）
+                same_cat_mask = (ans_c_label == ans_c_label[i,col])
+                
+                same_cat_mask[i] = False  # 自身除外
+                candidate_indices = np.where(same_cat_mask)[0]
+                
+                if candidate_indices.size == 0:
+                    print(f"Positive index {q_idx}: 同一カテゴリの候補が存在しない")
+                    continue
+                
+                vals_2d = cos_sim[i][candidate_indices][:,col,:] # (N(L), nItem)
+                vals_2d = vals_2d[same_cat_mask[candidate_indices]]
+                vals = vals_2d.ravel()              # shape=(N(L),)
+                
+                # 上位3候補のインデックス（候補集合内での相対インデックス）
+                top_idx = np.argsort(vals)[-10:][::-1]
+                
+                # top3_global_idx = candidate_indices[top3_rel_idx]
+                for r, tidx in enumerate(top_idx):
+                    sim_val = vals[tidx]
+                    set_x  = tidx // nItem   # flattenでのセット番号
+                    item_x = tidx %  nItem   # flattenでのアイテム番号
+                    # cand_id = test_item_id[set_x, item_x]
+                    cand_id =  test_item_id[candidate_indices][same_cat_mask[candidate_indices]]
+                    cand_id = cand_id.ravel()
+                    cand_id = cand_id[tidx]
+
+                    cand_path = os.path.join(image_dir, f"{cand_id}.jpg")
+                    try:
+                        cand_img = Image.open(cand_path)
+                    except:
+                        cand_img = None
+                    # axes[r+1, col].set_title(f"Top{r+1}")
+                    if cand_img is not None:
+                        axes[r+1, col].imshow(cand_img)
+                    else:
+                        axes[r+1, col].text(0.5, 0.5, "Image not found", ha="center", va="center")
+                    axes[r+1, col].axis("off")
+
+        plt.tight_layout()
+
+        # 灰色の線はユーザ要望で描画しない
+
+        save_path = os.path.join(save_dir, f"set_{set_counter}.png")
+        plt.savefig(save_path)
+        plt.close(fig)
+
+        set_counter += 1
+
+    print("Visualization done.")
