@@ -300,8 +300,8 @@ else:
 
 #---------------------------------
 
-path = os.path.join(modelPath, "result/predict_vector_test.pkl")
-if not os.path.exists(path):   
+test_data_path = os.path.join(modelPath, "result/predict_vector_test.pkl")
+if not os.path.exists(test_data_path):   
     # set data generator for evaluation and test (similar settings using test.pkl as train and valid)
     test_generator = data.trainDataGenerator(year = year, batch_size = batch_size, max_item_num = max_item_num)
     x_test, x_size_test, y_test, category1_test, category2_test, item_label_test, c2_test = test_generator.data_generation_test()
@@ -317,7 +317,7 @@ if not os.path.exists(path):
     # test_loss, test_acc = model_smn.evaluate((x_test,x_size_test, [], c2_test),y_test,batch_size=batch_size,verbose=1) 
     test_pred_vec, gallery, replicated_set_label, query_id = model_smn.predict((x_test[:7700],x_size_test[:7700], c2_test[:7700], y_test[:7700], item_label_test[:7700]),batch_size=100, verbose=1)
     
-    with open(path,'wb') as fp:
+    with open(test_data_path,'wb') as fp:
         pickle.dump(test_pred_vec, fp)
         pickle.dump(gallery, fp)
         pickle.dump(y_test[:7700], fp)
@@ -326,7 +326,7 @@ if not os.path.exists(path):
         pickle.dump(category2_test[:7700],fp)
         pickle.dump(item_label_test[:7700], fp)
 else:
-    with open(path, 'rb') as fp:
+    with open(test_data_path, 'rb') as fp:
         test_pred_vec = pickle.load(fp)
         gallery = pickle.load(fp)
         y_test = pickle.load(fp)
@@ -335,51 +335,22 @@ else:
         category2_test = pickle.load(fp)
         item_label_test = pickle.load(fp)
 
-test_rank = True
-path = os.path.join(modelPath, "result/ranking_test.pkl")
+test_rank = False
+rank_path = os.path.join(modelPath, "result/ranking_test.pkl")
 if test_rank:
     rank = util.compute_test_rank(gallery, test_pred_vec, y_test[:7700], category2_test[:7700])
-    with open(path, 'wb') as fp:
-        pickle.dump(rank, fp)
-else:
-    with open(path, 'rb') as fp:
-        rank = pickle.load(fp)
-   
-   
-rank = np.array(rank)
-predict_rank = rank
-# predict_rank = np.min(rank, axis=-1)
+    with open(rank_path, 'wb') as fp:
+        pickle.dump(rank, fp)   
 
-averages = []
-for row in predict_rank:
-    positive_elements = row[row != -1]
-    average = np.mean(positive_elements)
-    averages.append(average)
+# Top-Kaccuracy metrics 
+util.ranking_analysis(Ranking_pkl_path=rank_path, data_path=test_data_path, Dataset='Shift15M')
 
-# 平均値のリストを配列に変換
-averages_array = np.array(averages)
-nan_pd_array = np.where(averages_array == -1, np.nan, averages_array)
-# mean_values = np.nanmean(nan_pd_array, axis=1)
-mean_values = np.nanmean(nan_pd_array, axis=-1)
-
-
-unique_labels = np.unique(category2_test[:7700])
-
-# ラベルごとにスコアの平均を計算
-label_means = {}
-for label in unique_labels:
-    mask = (category2_test[:7700] == label)
-    if label==rep_vec_num: # label == padding_label
-        mean_score = 0
-    else:
-        mean_score = averages_array[mask].mean()
-    label_means[label] = mean_score
-    bin_count = int(np.sqrt(len(averages_array[mask])))
-print("Test_rank")
-print(label_means)
 Test_match_score = True
 path = os.path.join(modelPath, "result/Matchscore_test.pkl")
 if Test_match_score:
+    model_smn.compile(optimizer="adam", loss=util.OutBatchCLIPLoss, metrics=util.Retrieval_acc, run_eagerly=True)
+    test_generator = data.trainDataGenerator(year = year, batch_size = batch_size, max_item_num = max_item_num)
+    x_test, x_size_test, y_test, category1_test, category2_test, item_label_test, c2_test = test_generator.data_generation_test()
     test_pred_vec, gallery, replicated_set_label, query_id, Real_score, Fake_score = model_smn.predict((x_test[:7700],x_size_test[:7700], c2_test[:7700], y_test[:7700], item_label_test[:7700]),batch_size=50, verbose=1)
 
     # 真の組み合わせと予測の組み合わせを同時に保存
