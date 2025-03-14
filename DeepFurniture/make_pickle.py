@@ -103,7 +103,7 @@ def main():
         max_items=args.max_items,
         max_item_num=args.max_item_num
     )
-    pdb.set_trace()
+    
     # シーンIDを整数に変換
     unique_scene_ids = np.unique(Y)
     scene_id_to_int = {sid: idx for idx, sid in enumerate(unique_scene_ids)}

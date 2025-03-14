@@ -106,7 +106,7 @@ def main():
     import random
     import numpy as np
     import tensorflow as tf
-    pdb.set_trace()
+    
     # ログメッセージの抑制（必要に応じて）
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0: 全て表示, 1: INFO非表示, 2: WARNING非表示, 3: ERRORのみ
 
