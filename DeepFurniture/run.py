@@ -261,7 +261,7 @@ else:
         ans_c_label_test = pickle.load(fp)
         test_item_id = pickle.load(fp)
 
-test_rank = False
+test_rank = True
 rank_path = os.path.join(modelPath, "result/ranking_Test.pkl")
 if test_rank:
     rank = util.compute_test_rank(gallery, test_pred_vec, y_test, c_label_test)
@@ -273,7 +273,7 @@ if test_rank:
 util.ranking_analysis(Ranking_pkl_path=rank_path, data_path=test_data_path, Dataset='DeepFurniture')
 
 
-Test_match_score = False
+Test_match_score = True
 path = os.path.join(modelPath, "result/Matchscore_test.pkl")
 if Test_match_score:
     train_generator = data.DataGenerator(year=year, batch_size=28, max_item_num=max_item_num, use_all_pred=False)
