@@ -261,7 +261,7 @@ else:
         ans_c_label_test = pickle.load(fp)
         test_item_id = pickle.load(fp)
 
-test_rank = True
+test_rank = False
 rank_path = os.path.join(modelPath, "result/ranking_Test.pkl")
 if test_rank:
     rank = util.compute_test_rank(gallery, test_pred_vec, y_test, c_label_test)
@@ -278,6 +278,7 @@ path = os.path.join(modelPath, "result/Matchscore_test.pkl")
 if Test_match_score:
     train_generator = data.DataGenerator(year=year, batch_size=28, max_item_num=max_item_num, use_all_pred=False)
     test_data_set = train_generator.get_test_dataset()
+    model_smn.compile(optimizer='adam',loss=util.OutBatchCLIPLoss, metrics=util.Retrieval_acc,run_eagerly=True)
     test_pred_vec, gallery, Real_score, Fake_score = model_smn.predict((test_data_set),batch_size=50, verbose=1)
 
     # 真の組み合わせと予測の組み合わせを同時に保存
