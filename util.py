@@ -8,6 +8,7 @@ import math
 import pdb
 import pickle
 import seaborn as sns
+import pandas as pd
 from PIL import Image
 
 
@@ -617,7 +618,7 @@ def compute_test_rank(gallery, pred, set_label, category):
     return ranks
 #----------------------------   
 
-def ranking_analysis(Ranking_pkl_path, data_path, Dataset='DeepFurniture'):
+def ranking_analysis(Ranking_pkl_path, data_path, Dataset='DeepFurniture', Violin_plot=False):
     # Roading Result 
     if Dataset == 'Shift15M':
         with open(Ranking_pkl_path, 'rb') as fp:
@@ -686,6 +687,34 @@ def ranking_analysis(Ranking_pkl_path, data_path, Dataset='DeepFurniture'):
         print(f"Top{int(k*100)}percentile Accuracy (std) : ", np.array(sum).mean(), np.array(sum).std())
         acc_dict = {i: [] for i in range(MAXCATEGORY)}
 
+    # Violinplotによる可視化
+    if Violin_plot:
+        plot_data = []
+        plot_labels = []
+        plot_group = []  # スコアセットのグループ (1つ目 / 2つ目 / 3つ目)
+    
+        for label, score_list in score_dict.items():
+            plot_data.extend(score_list)
+            plot_labels.extend([label] * len(score_list))
+            plot_group.extend(["CST"] * len(score_list))
+
+        # データフレームに変換
+        df = pd.DataFrame({"Class": plot_labels, "Score": plot_data, "Dataset": plot_group})
+
+        # Violinplotの描画
+        plt.figure(figsize=(12, 6))
+        sns.violinplot(x=plot_labels, y=plot_data, scale='width', hue="Dataset", data=df, palette="coolwarm", inner="quartile", bw=0.2, cut=0)
+
+        plt.xlabel("Category")
+        plt.ylabel("Rank")
+        plt.title("Violinplot of  per Category")
+        plt.legend(title='')
+        # plt.xticks(rotation=90)
+        plt.grid(axis="y", linestyle="--", alpha=0.7)
+        plt.show()
+        plt.tight_layout()
+        result_path = "violin_plot.png"
+        plt.savefig(result_path)
     # # カテゴリごとにランクの平均を計算
     # label_means = {}
     # for label in unique_labels:
